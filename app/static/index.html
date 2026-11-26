@@ -191,6 +191,34 @@
   .cand .m { font-size: .85rem; color: var(--dim); }
   .cand .p { font-size: .95rem; margin: .4rem 0; line-height: 1.5; }
   select.btn { font: inherit; color: inherit; padding: .3rem .6rem; }
+
+  /* add your own file */
+  .addfile { margin-top: .75rem; display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; font-size: .9rem; }
+  .addfile label.btn { font-size: .9rem; padding: .35rem .9rem; }
+  .field { width: 100%; background: var(--night); border: 1px solid var(--edge); border-radius: .6rem; padding: .5rem .7rem; }
+
+  /* key, speed, recording, delete */
+  .keyval { min-width: 2.6rem; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .rec-on { background: #c0392b !important; border-color: #c0392b !important; color: #fff !important; }
+  .reclist { list-style: none; padding: 0; margin: .4rem 0 0; }
+  .reclist li { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding: .35rem 0; border-top: 1px solid var(--edge); font-size: .85rem; }
+  .reclist audio { height: 2rem; flex: 1; min-width: 12rem; }
+  .reclist a { color: var(--amber); }
+  .danger-btn { color: var(--danger); }
+  .section-gap { margin-top: 1.1rem; padding-top: .8rem; border-top: 1px solid var(--edge); }
+
+  /* countdown before the singing starts again */
+  .line.soon::before { content: attr(data-count); display: block; font-size: .5em; letter-spacing: .3em; color: var(--amber); opacity: .9; }
+
+  /* full-screen lyrics (TV / party mode) */
+  #stageBar { display: none; }
+  body.stage #player { display: block; max-width: none; height: 100dvh; }
+  body.stage .topbar, body.stage .dock { display: none; }
+  body.stage .lyrics { height: 100dvh; padding: 42vh 6vw; }
+  body.stage .line { font-size: clamp(2.2rem, 5.6vw, 5.2rem); margin-bottom: 1.4rem; }
+  body.stage #stageBar { display: flex; gap: .5rem; position: fixed; right: 1rem; bottom: 1rem; opacity: .35; transition: opacity .2s; }
+  body.stage #stageBar:hover, body.stage #stageBar:focus-within { opacity: 1; }
+  @media (min-width: 900px) { #stageBtn { order: 2; } }
   select.btn option { background: var(--stage); color: var(--paper); }
 </style>
 </head>
@@ -206,7 +234,13 @@
     <input id="q" type="search" placeholder="Song and artist" autocomplete="off" aria-label="Song and artist">
     <button class="btn primary" type="submit">Search</button>
   </form>
+  <div class="addfile">
+    <span class="muted">or</span>
+    <label class="btn" for="fileIn">Use a song file from this device</label>
+    <input id="fileIn" type="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.flac,.ogg,.opus,.aac,.mp4,.mkv,.webm" hidden>
+  </div>
   <div id="status" class="status muted" role="status"></div>
+  <button id="undoBtn" class="btn nudge" type="button" hidden>Undo</button>
 
   <section id="progress" class="progress" hidden>
     <div id="progressTitle" class="title"></div>
@@ -233,7 +267,12 @@
     <button id="backBtn" class="btn" type="button">Back</button>
     <img id="cover" class="cover" alt="" hidden>
     <div id="songName" class="name"></div>
+    <button id="stageBtn" class="btn" type="button" title="Big lyrics on the whole screen (key F)">Full screen</button>
     <button id="editBtn" class="btn" type="button">Edit lyrics</button>
+  </div>
+  <div id="stageBar">
+    <button id="stagePlay" class="btn" type="button">Play / Pause</button>
+    <button id="stageExit" class="btn" type="button">Exit full screen</button>
   </div>
 
   <div id="lyrics" class="lyrics" aria-live="off"></div>
@@ -264,6 +303,25 @@
       <span id="vBackVal" class="val">Off</span>
     </div>
     <div id="backHint" class="hint"></div>
+    <div class="mix">
+      <label>Key</label>
+      <button id="keyDown" class="btn nudge" type="button" aria-label="Lower key">&minus;</button>
+      <span id="keyVal" class="keyval">0</span>
+      <button id="keyUp" class="btn nudge" type="button" aria-label="Higher key">+</button>
+      <span id="keyMsg" class="muted" style="font-size:.85rem"></span>
+    </div>
+    <div class="mix">
+      <label for="speedSel">Speed</label>
+      <select id="speedSel" class="btn">
+        <option value="0.7">70%</option>
+        <option value="0.8">80%</option>
+        <option value="0.9">90%</option>
+        <option value="1" selected>Normal</option>
+        <option value="1.1">110%</option>
+        <option value="1.2">120%</option>
+      </select>
+      <span class="muted" style="font-size:.85rem">Slower or faster, same key.</span>
+    </div>
     <div id="noVocals" class="hint" style="margin-left:0" hidden>
       This song was saved with the instrumental only, so there are no singer controls.
       Search it again and press Make karaoke to get them.
@@ -307,12 +365,29 @@
     <div class="muted" style="font-size:.8rem;margin-top:.4rem">
       Lyrics appearing too early? Move the timing up (+). Too late? Move it down (-).
     </div>
+
+    <div class="section-gap">
+      <div class="mix" style="flex-wrap:wrap">
+        <label>Record yourself</label>
+        <button id="recBtn" class="btn" type="button">Record my singing</button>
+        <span id="recMsg" class="muted" style="font-size:.85rem;flex-basis:100%">Records your voice with the music, from where the song is now. Use headphones for the best sound.</span>
+      </div>
+      <ul id="recList" class="reclist"></ul>
+    </div>
+
+    <div class="section-gap">
+      <button id="deleteBtn" class="btn danger-btn" type="button">Delete this song</button>
+    </div>
   </div>
 </section>
 
 <dialog id="modeDialog">
   <h2 style="margin-top:0">How should the vocals be saved?</h2>
   <p id="modeTitle" class="muted" style="margin-top:0;overflow-wrap:anywhere"></p>
+  <label id="modeNameRow" hidden>
+    <span class="muted" style="font-size:.9rem">Song name (artist and title help find the lyrics)</span>
+    <input id="modeName" class="field" type="text" autocomplete="off">
+  </label>
   <p id="modeNote" class="muted" style="font-size:.9rem" hidden></p>
   <button id="modeSplit" class="choice" type="button">
     <strong>Singer and ad-libs separately</strong>
@@ -334,7 +409,8 @@
 
 <dialog id="editDialog">
   <h2 style="margin-top:0">Edit lyrics</h2>
-  <p class="muted" style="margin-top:0">One line per lyric, each starting with its time, like <code>[01:23.45] text</code>.</p>
+  <p class="muted" style="margin-top:0">One line per lyric, each starting with its time, like <code>[01:23.45] text</code>.
+    Lyrics written by the app also carry the time of each word, like <code>&lt;01:23.80&gt;word</code>: keep them, or remove them all.</p>
   <textarea id="editText" spellcheck="false"></textarea>
   <div class="actions">
     <button id="editCancel" class="btn" type="button">Cancel</button>
@@ -376,12 +452,27 @@ function parseLRC(text) {
   for (const raw of (text || "").split(/\r?\n/)) {
     const stamps = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
     if (!stamps.length) continue;
-    const words = raw.replace(/\[[^\]]*\]/g, "").trim();
-    for (const m of stamps) out.push({ t: parseInt(m[1], 10) * 60 + parseFloat(m[2]), text: words });
+    const { text, wt } = parseWords(raw.replace(/\[[^\]]*\]/g, "").trim());
+    for (const m of stamps) out.push({ t: parseInt(m[1], 10) * 60 + parseFloat(m[2]), text, wt });
   }
   out.sort((a, b) => a.t - b.t);
   return out;
 }
+// "<00:08.56>In <00:08.90>your" -> words without the tags + the time of each word (enhanced LRC)
+function parseWords(raw) {
+  if (!/<\d+:\d+(?:\.\d+)?>/.test(raw)) return { text: raw, wt: null };
+  const words = [], wt = [];
+  for (const tok of raw.split(/\s+/)) {
+    const m = tok.match(/^<(\d+):(\d+(?:\.\d+)?)>(.*)$/);
+    const w = m ? m[3] : tok;
+    if (!w) continue;
+    words.push(w);
+    wt.push(m ? parseInt(m[1], 10) * 60 + parseFloat(m[2]) : null);
+  }
+  for (let k = 1; k < wt.length; k++) if (wt[k] === null) wt[k] = wt[k - 1];
+  return { text: words.join(" "), wt: wt.length && wt[0] !== null ? wt : null };
+}
+
 // index of the last line whose time is <= t, or -1
 function findLine(lines, t) {
   let lo = 0, hi = lines.length - 1, ans = -1;
@@ -485,7 +576,11 @@ let pending = null;
 function askMode(video, query) {
   if (busy) return;
   pending = { video, query };
+  const isFile = !!video.upload;
   $("#modeTitle").textContent = video.title;
+  $("#modeTitle").hidden = isFile;
+  $("#modeNameRow").hidden = !isFile;
+  $("#modeName").value = isFile ? video.title : "";
   const fast = etaFor("fast", video.duration), split = etaFor("split", video.duration);
   const slow = !machine.fast && split > 8 * 60;
   $("#modeWholeInfo").textContent = "One vocals track, ad-libs included. " +
@@ -501,8 +596,16 @@ function askMode(video, query) {
   $("#modeDialog").showModal();
 }
 $("#modeCancel").addEventListener("click", () => $("#modeDialog").close());
-$("#modeSplit").addEventListener("click", () => { $("#modeDialog").close(); startJob(pending.video, pending.query, true); });
-$("#modeWhole").addEventListener("click", () => { $("#modeDialog").close(); startJob(pending.video, pending.query, false); });
+function chosen(withSplit) {
+  $("#modeDialog").close();
+  if (pending.video.upload) {
+    pending.video.title = $("#modeName").value.trim() || pending.video.title;
+    pending.query = pending.video.title;
+  }
+  startJob(pending.video, pending.query, withSplit);
+}
+$("#modeSplit").addEventListener("click", () => chosen(true));
+$("#modeWhole").addEventListener("click", () => chosen(false));
 
 /* ---------- stopping a job ---------- */
 async function stopJob(id) {
@@ -601,7 +704,7 @@ async function startJob(video, query, withSplit) {
   try {
     const { job } = await postJSON("/api/process", {
       id: video.id, title: video.title, url: video.url, channel: video.channel || "",
-      duration: video.duration || null, query, split: withSplit,
+      duration: video.duration || null, query, split: withSplit, upload: video.upload || "",
     });
     currentJob = job;
     const stop = $("#stopBtn");
@@ -708,6 +811,17 @@ async function openSong(slug) {
   setOffsetUI();
   renderLyrics();
   setCover(data.slug, data.hasCover);
+  speed = 1;
+  $("#speedSel").value = "1";
+  song.key = data.key || 0;
+  if (song.key) {                       // make sure the tracks in the saved key are there
+    try { await postJSON("/api/song/" + enc(slug) + "/key", { semitones: song.key }); }
+    catch (_) { song.key = 0; }
+  }
+  showKey();
+  renderRecordings();
+  $("#recMsg").textContent = REC_HINT;
+  $("#recMsg").className = "muted";
   setupAudio();
   $("#splitRow").hidden = !(data.hasVocals && !data.hasLead);
   $("#noVocals").hidden = data.hasVocals;
@@ -749,13 +863,15 @@ function setCover(slug, has) {
 }
 
 function setupAudio() {
-  const base = "/files/" + enc(song.slug) + "/";
+  const base = "/files/" + enc(song.slug) + "/" + keyPath(song.key);
   // Web Audio gives real volume control on phones too (iOS ignores audio.volume)
   const AC = window.AudioContext || window.webkitAudioContext;
   ctx = new AC();
   const add = (key, file) => {
     const el = new Audio(base + file);
     el.preload = "auto";
+    el.preservesPitch = true; el.mozPreservesPitch = true; el.webkitPreservesPitch = true;
+    el.playbackRate = speed;
     const gain = ctx.createGain();
     ctx.createMediaElementSource(el).connect(gain).connect(ctx.destination);
     stems.push({ key, el, gain });
@@ -780,6 +896,7 @@ function setupAudio() {
 }
 
 function teardown() {
+  if (rec) stopRecording();
   cancelAnimationFrame(raf);
   for (const x of stems) { x.el.pause(); x.el.removeAttribute("src"); x.el.load(); }
   stems = [];
@@ -1093,8 +1210,8 @@ function updateLyrics(now) {
       }
     });
     activeIdx = i;
-    if (i >= 0) {
-      const el = lineEls[i], box = $("#lyrics");
+    const el = lineEls[Math.max(i, 0)], box = $("#lyrics");   // before the first line: show the first line
+    if (el) {
       box.scrollTo({
         top: el.offsetTop - box.clientHeight / 2 + el.clientHeight / 2,
         behavior: reduceMotion ? "auto" : "smooth",
@@ -1103,14 +1220,38 @@ function updateLyrics(now) {
   }
   if (i >= 0 && lineEls[i]._words) {
     const ln = lines[i], el = lineEls[i];
-    const next = lines[i + 1] ? lines[i + 1].t : ln.t + 5;
-    const dur = Math.min(Math.max(next - ln.t - 0.25, 0.6), 7);
-    const p = Math.max(0, Math.min(1, (t - ln.t) / dur));
-    const n = Math.min(el._words.length, Math.ceil(p * el._words.length - 0.0001));
+    let n;
+    if (ln.wt && ln.wt.length === el._words.length) {
+      n = ln.wt.filter((wt) => wt <= t + 0.05).length;      // the real time of each word
+    } else {                                                 // spread the words over the line
+      const next = lines[i + 1] ? lines[i + 1].t : ln.t + 5;
+      const dur = Math.min(Math.max(next - ln.t - 0.25, 0.6), 7);
+      const p = Math.max(0, Math.min(1, (t - ln.t) / dur));
+      n = Math.min(el._words.length, Math.ceil(p * el._words.length - 0.0001));
+    }
     if (n !== el._sung) {
       el._words.forEach((w, k) => w.classList.toggle("sung", k < n));
       el._sung = n;
     }
+  }
+  updateCountdown(i, t);
+}
+
+// 3 dots counting down above the next line when the singing starts again after a long break
+let soonIdx = -1;
+function updateCountdown(i, t) {
+  const j = i + 1;
+  let show = -1, count = 0;
+  if (j < lines.length && lines[j].text) {
+    const left = lines[j].t - t;
+    const longBreak = i < 0 || !lines[i].text || lines[j].t - lines[i].t >= 8;
+    if (longBreak && left > 0 && left <= 3) { show = j; count = Math.ceil(left); }
+  }
+  if (soonIdx >= 0 && soonIdx !== show && lineEls[soonIdx]) lineEls[soonIdx].classList.remove("soon");
+  soonIdx = show;
+  if (show >= 0) {
+    lineEls[show].classList.add("soon");
+    lineEls[show].dataset.count = "\u25CF ".repeat(count).trim();
   }
 }
 
@@ -1148,6 +1289,7 @@ $("#backBtn").addEventListener("click", () => {
 document.addEventListener("keydown", (e) => {
   if ($("#player").hidden || e.target.matches("input[type=search], textarea")) return;
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+  else if (e.code === "KeyF" && !e.ctrlKey && !e.metaKey) { toggleStage(); }
   else if (e.code === "ArrowLeft") { seekTo((master() ? master().currentTime : 0) - 5); }
   else if (e.code === "ArrowRight") { seekTo((master() ? master().currentTime : 0) + 5); }
 });
@@ -1170,6 +1312,231 @@ $("#editSave").addEventListener("click", async () => {
     dlg.close();
   } catch (err) { alert(err.message); }
 });
+
+/* ---------- your own song file ---------- */
+// sent with XMLHttpRequest (not fetch) to show how much of the file has arrived
+function sendFile(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", url);
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.onload = () => {
+      let body = {};
+      try { body = JSON.parse(x.responseText); } catch (_) {}
+      if (x.status >= 200 && x.status < 300) resolve(body);
+      else reject(new Error(body.detail || "The file could not be sent."));
+    };
+    x.onerror = () => reject(new Error("The file could not be sent. Is Kairokee still running?"));
+    x.send(file);
+  });
+}
+$("#fileIn").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file || busy) return;
+  setStatus("Reading the file...");
+  try {
+    const r = await sendFile("/api/upload?name=" + enc(file.name), file,
+      (p) => setStatus("Reading the file... " + Math.round(p * 100) + "%"));
+    setStatus("");
+    askMode({ title: r.title, duration: r.duration, upload: r.upload }, r.title);
+  } catch (err) { setStatus(err.message, true); }
+});
+
+/* ---------- delete a song (can be undone) ---------- */
+let undoTrash = null;
+$("#deleteBtn").addEventListener("click", async () => {
+  if (!song) return;
+  const title = song.title, slug = song.slug;
+  if (!confirm('Delete "' + title + '"?\n\nYou can undo this right after, and the song is kept in the "deleted" folder for 30 days.')) return;
+  teardown();
+  try {
+    const r = await api("/api/song/" + enc(slug), { method: "DELETE" });
+    $("#player").hidden = true;
+    $("#home").hidden = false;
+    history.replaceState(null, "", location.pathname);
+    song = null;
+    await loadLibrary();
+    setStatus('Deleted "' + title + '".');
+    undoTrash = r.trash;
+    $("#undoBtn").hidden = false;
+  } catch (err) { alert(err.message); openSong(slug); }
+});
+$("#undoBtn").addEventListener("click", async () => {
+  if (!undoTrash) return;
+  try {
+    await postJSON("/api/trash/" + enc(undoTrash) + "/restore", {});
+    setStatus("The song is back.");
+    await loadLibrary();
+  } catch (err) { setStatus(err.message, true); }
+  undoTrash = null;
+  $("#undoBtn").hidden = true;
+});
+
+/* ---------- key and speed ---------- */
+let speed = 1;
+const keyPath = (n) => (n ? "key/" + (n > 0 ? "+" : "") + n + "/" : "");
+function showKey() {
+  const n = song ? song.key || 0 : 0;
+  $("#keyVal").textContent = (n > 0 ? "+" : "") + n;
+  $("#keyDown").disabled = n <= -6;
+  $("#keyUp").disabled = n >= 6;
+  $("#keyMsg").textContent = n ? "" : "Lower it if the song is too high for you.";
+}
+async function changeKey(delta) {
+  if (!song) return;
+  const n = Math.max(-6, Math.min(6, (song.key || 0) + delta));
+  const slug = song.slug;
+  $("#keyDown").disabled = $("#keyUp").disabled = true;
+  $("#keyMsg").textContent = "Changing the key... (a few seconds)";
+  try {
+    const r = await postJSON("/api/song/" + enc(slug) + "/key", { semitones: n });
+    if (!song || song.slug !== slug) return;
+    const m = master(), t = m ? m.currentTime : 0, wasPlaying = m && !m.paused;
+    teardown();
+    song.key = r.key;
+    setupAudio();
+    await new Promise((res) => { master().addEventListener("loadedmetadata", res, { once: true }); setTimeout(res, 4000); });
+    stems.forEach((x) => { x.el.currentTime = t; });
+    if (wasPlaying) {
+      try { await ctx.resume(); await Promise.all(stems.map((x) => x.el.play())); } catch (err) { console.error(err); }
+    }
+    syncPlayButton();
+  } catch (err) {
+    showKey();
+    $("#keyMsg").textContent = err.message;
+    return;
+  }
+  showKey();
+}
+$("#keyDown").addEventListener("click", () => changeKey(-1));
+$("#keyUp").addEventListener("click", () => changeKey(1));
+$("#speedSel").addEventListener("change", (e) => {
+  speed = parseFloat(e.target.value) || 1;
+  stems.forEach((x) => { x.el.playbackRate = speed; });
+});
+
+/* ---------- full-screen lyrics ---------- */
+function toggleStage(force) {
+  const on = force === undefined ? !document.body.classList.contains("stage") : force;
+  document.body.classList.toggle("stage", on);
+  if (on && document.documentElement.requestFullscreen && !document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  } else if (!on && document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  }
+  activeIdx = -2;   // scroll the current line back to the middle
+}
+$("#stageBtn").addEventListener("click", () => toggleStage(true));
+$("#stageExit").addEventListener("click", () => toggleStage(false));
+$("#stagePlay").addEventListener("click", togglePlay);
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement && document.body.classList.contains("stage")) toggleStage(false);
+});
+
+/* ---------- record yourself singing ---------- */
+const REC_HINT = "Records your voice with the music, from where the song is now. Use headphones for the best sound.";
+let rec = null;   // {mr, stream, chunks, start, latency, slug, key, music}
+function recSupported() {
+  return !!(window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+async function startRecording() {
+  const msg = $("#recMsg");
+  if (!recSupported()) {
+    msg.className = "error";
+    msg.textContent = "Recording only works in a browser on the computer that runs Kairokee " +
+      "(browsers allow the microphone only on secure pages, and the phone address is not one).";
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true } });
+  } catch (err) {
+    msg.className = "error";
+    msg.textContent = "The microphone could not be used: " + err.message + ". Allow the microphone for this page and try again.";
+    return;
+  }
+  const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  const mr = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  const track = stream.getAudioTracks()[0];
+  const inLat = (track.getSettings && track.getSettings().latency) || 0.02;
+  const outLat = ctx ? (ctx.outputLatency || ctx.baseLatency || 0.04) : 0.04;
+  rec = { mr, stream, chunks: [], start: 0, latency: inLat + outLat, slug: song.slug, key: song.key || 0, music: mix.music / 100 };
+  mr.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+  const m = master();
+  if (m && m.paused) await togglePlay();
+  mr.onstart = () => { if (rec) rec.start = master() ? master().currentTime : 0; };
+  mr.start(1000);
+  $("#recBtn").textContent = "Stop recording";
+  $("#recBtn").classList.add("rec-on");
+  msg.className = "muted";
+  msg.textContent = "Recording... sing along! Press Stop recording when you are done.";
+}
+function stopRecording() {
+  const r = rec;
+  rec = null;
+  $("#recBtn").textContent = "Record my singing";
+  $("#recBtn").classList.remove("rec-on");
+  if (!r) return;
+  r.mr.onstop = async () => {
+    r.stream.getTracks().forEach((t) => t.stop());
+    const type = r.mr.mimeType || "audio/webm";
+    const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
+    const blob = new Blob(r.chunks, { type });
+    const msg = $("#recMsg");
+    if (blob.size < 2000) { msg.textContent = "The recording was too short."; return; }
+    msg.className = "muted";
+    msg.textContent = "Saving your recording...";
+    try {
+      const q = "?start=" + r.start.toFixed(3) + "&latency=" + r.latency.toFixed(3) +
+                "&music=" + r.music.toFixed(2) + "&key=" + r.key + "&ext=" + ext;
+      await sendFile("/api/song/" + enc(r.slug) + "/recording" + q, blob, () => {});
+      if (song && song.slug === r.slug) {
+        const data = await api("/api/song/" + enc(r.slug));
+        song.recordings = data.recordings;
+        renderRecordings();
+        msg.textContent = "Saved. Your recordings are listed below.";
+      }
+    } catch (err) { msg.className = "error"; msg.textContent = err.message; }
+  };
+  try { r.mr.stop(); } catch (_) {}
+  const m = master();
+  if (m && !m.paused) stems.forEach((x) => x.el.pause());
+  syncPlayButton();
+}
+$("#recBtn").addEventListener("click", () => (rec ? stopRecording() : startRecording()));
+function renderRecordings() {
+  const ul = $("#recList");
+  ul.replaceChildren();
+  for (const r of (song && song.recordings) || []) {
+    const li = document.createElement("li");
+    const url = "/files/" + enc(song.slug) + "/recordings/" + enc(r.name);
+    const name = document.createElement("span");
+    name.textContent = r.name.replace(/\.mp3$/, "");
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.preload = "none";
+    audio.src = url;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = song.title + " - " + r.name;
+    a.textContent = "Download";
+    const del = document.createElement("button");
+    del.className = "btn nudge danger-btn";
+    del.type = "button";
+    del.textContent = "Delete";
+    del.addEventListener("click", async () => {
+      if (!confirm("Delete this recording? This cannot be undone.")) return;
+      try {
+        await api("/api/song/" + enc(song.slug) + "/recordings/" + enc(r.name), { method: "DELETE" });
+        song.recordings = song.recordings.filter((x) => x.name !== r.name);
+        renderRecordings();
+      } catch (err) { alert(err.message); }
+    });
+    li.append(name, audio, a, del);
+    ul.append(li);
+  }
+}
 
 /* ---------- start ---------- */
 loadLibrary().then(() => {

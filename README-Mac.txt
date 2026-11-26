@@ -43,6 +43,21 @@ If the Mac asks whether to stop the running program, click "Terminate".
 To stop a song that is being prepared, press Stop under the progress list.
 
 
+WHAT YOU CAN DO WITH A SONG
+---------------------------
+ - Turn the singer and the ad-libs on or off, and set the music volume.
+ - Key: press - or + to sing it lower or higher (takes a few seconds the first time).
+ - Speed: slower or faster for practice, without changing the key.
+ - Full screen: big lyrics for a TV or a party (press F, or Esc to leave).
+   Dots count down before the singing starts again.
+ - Record my singing: records your voice with the music and saves it as an mp3 you can
+   download. Use headphones. It works in a browser on the computer that runs Kairokee
+   (not from a phone: browsers only allow the microphone on secure pages).
+ - Use a song file from this device: make karaoke from your own audio or video file
+   instead of YouTube (on the home page, under the search box).
+ - Delete this song: you can press Undo right away, and deleted songs are kept for
+   30 days in the "data/deleted" folder before they are removed.
+
 THE FIRST TIME YOU USE EACH FEATURE
 -----------------------------------
 Some AI models download only when first needed (once only, then they are kept):

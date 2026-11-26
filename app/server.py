@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -201,19 +201,72 @@ def api_search(q: str):
 
 
 class ProcessRequest(BaseModel):
-    id: str
+    id: str = ""
     title: str
-    url: str
+    url: str = ""
     channel: str = ""
     duration: float | None = None
-    query: str
+    query: str = ""
     split: bool = True      # True = lead and ad-libs separately, False = whole vocals (faster)
+    upload: str = ""        # set instead of id/url for an audio file you added yourself (see /api/upload)
+
+
+UPLOADS = kk.DATA / "uploads"
+UPLOAD_ID = re.compile(r"^[0-9a-f]{32}\.[a-z0-9]{1,5}$")
+
+
+@app.put("/api/upload")
+async def api_upload(request: Request, name: str = "song"):
+    """Receive an audio or video file from the page (the raw file is the request body)."""
+    UPLOADS.mkdir(parents=True, exist_ok=True)
+    ext = (Path(name).suffix.lower().lstrip(".") or "bin")[:5]
+    if not ext.isalnum():
+        ext = "bin"
+    upload = f"{uuid.uuid4().hex}.{ext}"
+    dest = UPLOADS / upload
+    size = 0
+    with open(dest, "wb") as f:
+        async for chunk in request.stream():
+            f.write(chunk)
+            size += len(chunk)
+    if size == 0:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, "The file is empty.")
+    duration = kk.media_duration(dest)
+    if not duration:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, "This file could not be read. Use an audio or video file (mp3, m4a, wav, flac, mp4...).")
+    title = re.sub(r"[_]+", " ", Path(name).stem).strip() or "My song"
+    return {"upload": upload, "title": title, "duration": duration}
+
+
+def clean_old_uploads():
+    """Files that were added but never made into a song (page closed...) are removed after a day."""
+    if not UPLOADS.exists():
+        return
+    for f in UPLOADS.iterdir():
+        try:
+            if time.time() - f.stat().st_mtime > 86400:
+                f.unlink()
+        except Exception:
+            pass
 
 
 @app.post("/api/process")
 def api_process(req: ProcessRequest):
-    video = {"id": req.id, "title": req.title, "url": req.url,
-             "channel": req.channel, "duration": req.duration}
+    upload = None
+    if req.upload:
+        if not UPLOAD_ID.match(req.upload) or not (UPLOADS / req.upload).exists():
+            raise HTTPException(400, "The file is gone. Choose it again.")
+        upload = UPLOADS / req.upload
+        video = {"id": kk.file_id(upload), "title": req.title.strip() or "My song", "url": None,
+                 "file": str(upload), "duration": req.duration}
+    elif req.id and req.url:
+        video = {"id": req.id, "title": req.title, "url": req.url,
+                 "channel": req.channel, "duration": req.duration}
+    else:
+        raise HTTPException(400, "Nothing to make: choose a search result or a file.")
+    query = req.query or video["title"]
     name = kk.folder_name(video)
     folder = OUT / name
     is_new = not (folder / "instrumental.mp3").exists()
@@ -232,9 +285,13 @@ def api_process(req: ProcessRequest):
             stamps.append((s, time.time()))
             job.update(stage=s, detail="")
 
-        kk.run_pipeline(video, req.query, keep="both", split=req.split, folder=folder,
-                        stage=on_stage,
-                        detail=lambda m: job.__setitem__("detail", m))
+        try:
+            kk.run_pipeline(video, query, keep="both", split=req.split, folder=folder,
+                            stage=on_stage,
+                            detail=lambda m: job.__setitem__("detail", m))
+        finally:
+            if upload:
+                upload.unlink(missing_ok=True)   # the song folder has its own copy of the audio now
         finished = time.time()
         spent = {}
         for i, (step, t0) in enumerate(stamps):
@@ -289,7 +346,133 @@ def api_song(slug: str):
         "offset": meta.get("offset", 0.0),
         "source": meta.get("lyrics_source"),
         "duration": meta.get("video_duration"),
+        "key": int(meta.get("key") or 0),
+        "recordings": list_recordings(folder),
     }
+
+
+# --------------------------------------------------------------------------- delete (recoverable)
+TRASH = kk.DATA / "deleted"
+TRASH_DAYS = 30
+
+
+@app.delete("/api/song/{slug}")
+def api_delete(slug: str):
+    """Move a song to the 'deleted' folder. It can be restored for 30 days, then it is removed."""
+    folder = song_folder(slug)
+    TRASH.mkdir(parents=True, exist_ok=True)
+    name = folder.name
+    k = 2
+    while (TRASH / name).exists():
+        name = f"{folder.name} ({k})"
+        k += 1
+    (folder / ".deleted").write_text(str(time.time()), encoding="utf-8")
+    for attempt in range(10):          # the browser may still be letting go of the audio files
+        try:
+            folder.rename(TRASH / name)
+            break
+        except PermissionError:
+            time.sleep(0.5)
+    else:
+        (folder / ".deleted").unlink(missing_ok=True)
+        raise HTTPException(409, "The song is still in use. Wait a moment and try again.")
+    return {"ok": True, "trash": name}
+
+
+@app.post("/api/trash/{name}/restore")
+def api_restore(name: str):
+    src = (TRASH / name).resolve()
+    if src.parent != TRASH.resolve() or not src.is_dir():
+        raise HTTPException(404, "This song is no longer in the deleted songs.")
+    dest_name = src.name
+    k = 2
+    while (OUT / dest_name).exists():
+        dest_name = f"{src.name} ({k})"
+        k += 1
+    src.rename(OUT / dest_name)
+    (OUT / dest_name / ".deleted").unlink(missing_ok=True)
+    return {"ok": True, "slug": dest_name}
+
+
+def empty_old_trash():
+    if not TRASH.exists():
+        return
+    for d in TRASH.iterdir():
+        try:
+            when = float((d / ".deleted").read_text(encoding="utf-8"))
+        except Exception:
+            when = d.stat().st_mtime
+        if time.time() - when > TRASH_DAYS * 86400:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- key change
+class KeyBody(BaseModel):
+    semitones: int
+
+
+@app.post("/api/song/{slug}/key")
+def api_key(slug: str, body: KeyBody):
+    """Make the tracks in another key (a few seconds) and remember the choice for this song."""
+    folder = song_folder(slug)
+    n = max(-6, min(6, body.semitones))
+    with job_lock:
+        if any(j["state"] == "running" for j in jobs.values()):
+            raise HTTPException(409, "Wait until the song that is being prepared is finished.")
+    try:
+        kk.render_key(folder, n)
+    except kk.KairokeeError as e:
+        raise HTTPException(500, str(e))
+    meta = read_meta(folder)
+    meta["key"] = n
+    write_meta(folder, meta)
+    return {"ok": True, "key": n, "path": "" if n == 0 else f"key/{n:+d}/"}
+
+
+# --------------------------------------------------------------------------- recordings
+def list_recordings(folder):
+    rec = folder / "recordings"
+    if not rec.exists():
+        return []
+    files = sorted(rec.glob("*.mp3"), key=lambda f: f.stat().st_mtime, reverse=True)
+    return [{"name": f.name, "size": f.stat().st_size} for f in files]
+
+
+@app.put("/api/song/{slug}/recording")
+async def api_recording(request: Request, slug: str, start: float = 0.0, latency: float = 0.0,
+                        music: float = 1.0, key: int = 0, ext: str = "webm"):
+    """Receive your singing (recorded in the browser) and save it mixed with the music as an mp3."""
+    folder = song_folder(slug)
+    rec = folder / "recordings"
+    rec.mkdir(exist_ok=True)
+    ext = ext if ext.isalnum() and len(ext) <= 5 else "webm"
+    raw = rec / f"voice-{uuid.uuid4().hex[:8]}.{ext}"
+    with open(raw, "wb") as f:
+        async for chunk in request.stream():
+            f.write(chunk)
+    out = rec / time.strftime("Recording %Y-%m-%d %H-%M-%S.mp3")
+    try:
+        await asyncio_to_thread(kk.mix_recording, folder, raw, start, latency, music, key, out)
+    except kk.KairokeeError as e:
+        raise HTTPException(500, str(e))
+    finally:
+        raw.unlink(missing_ok=True)
+    return {"ok": True, "name": out.name}
+
+
+async def asyncio_to_thread(fn, *args):
+    import asyncio
+    return await asyncio.to_thread(fn, *args)
+
+
+@app.delete("/api/song/{slug}/recordings/{name}")
+def api_recording_delete(slug: str, name: str):
+    folder = song_folder(slug)
+    f = (folder / "recordings" / name).resolve()
+    if f.parent != (folder / "recordings").resolve() or not f.exists():
+        raise HTTPException(404, "Recording not found")
+    f.unlink()
+    return {"ok": True}
 
 
 class Settings(BaseModel):
@@ -548,4 +731,9 @@ if __name__ == "__main__":
         print(f"  (To use it from a phone, open {phone} instead.)")
     print("  To stop Kairokee, close this window.\n")
     threading.Thread(target=detect_device, daemon=True).start()
+    for tidy in (empty_old_trash, clean_old_uploads):
+        try:
+            tidy()
+        except Exception as e:
+            print(f"[!] {e}")
     uvicorn.run(app, host="0.0.0.0" if PHONE_MODE else "127.0.0.1", port=PORT, log_level="warning")

@@ -127,19 +127,55 @@ def slug(text):
 
 
 def folder_name(video):
-    """Folder name for a video. Two different songs with the same title must not overwrite each other,
-    so if the title's folder already holds ANOTHER video, the video id is added to the name."""
-    name = slug(video["title"])
+    """Folder name for a song. Making the SAME video (or file) again reuses its folder; a different
+    song with the same title gets "Title (2)", "Title (3)"... so nothing is ever overwritten."""
+    base = slug(video["title"])
     vid = video.get("id")
-    meta_path = OUT / name / "meta.json"
-    if vid and meta_path.exists():
+    for k in range(1, 100):
+        name = base if k == 1 else f"{base[:74].strip(' .')} ({k})"
+        folder = OUT / name
+        if not folder.exists():
+            return name
         try:
-            other = json.loads(meta_path.read_text(encoding="utf-8")).get("id")
+            other = json.loads((folder / "meta.json").read_text(encoding="utf-8")).get("id")
         except Exception:
             other = None
-        if other and other != vid:
-            return f"{name[:68].strip(' .')} {vid}"
-    return name
+        if vid and other == vid:
+            return name
+        if not vid and not other and not (folder / "instrumental.mp3").exists():
+            return name          # an unfinished folder without any song in it
+    die("Too many songs with this title.")
+
+
+def file_id(path):
+    """A stable id for an audio file you added yourself (same file = same id = same song folder)."""
+    import hashlib
+
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return "file:" + h.hexdigest()[:16]
+
+
+def media_duration(path):
+    """Length in seconds (ffprobe), or None."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=nw=1:nk=1", str(path)], capture_output=True, text=True, timeout=60)
+        return round(float(r.stdout.strip()), 1)
+    except Exception:
+        return None
+
+
+def import_audio(src, folder):
+    """Your own audio (or video) file -> folder/original.wav."""
+    print(f"\n[1/3] Reading your file {Path(src).name} ...")
+    wav = folder / "original.wav"
+    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-vn", "-ac", "2", str(wav)])
+    if r.returncode != 0 or not wav.exists():
+        die("This file could not be read. Use an audio or video file (mp3, m4a, wav, flac, mp4...).")
+    return wav
 
 
 def clean_title(title):
@@ -346,6 +382,89 @@ def to_mp3(src, dst):
     )
 
 
+# --------------------------------------------------------------------------- key change and recordings
+STEM_FILES = ("instrumental.mp3", "vocals.mp3", "lead.mp3", "backing.mp3")
+_filters = {}
+
+
+def has_ffmpeg_filter(name):
+    if name not in _filters:
+        try:
+            out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True, timeout=30).stdout
+            _filters[name] = any(line.split()[1:2] == [name] for line in out.splitlines() if line.strip())
+        except Exception:
+            _filters[name] = False
+    return _filters[name]
+
+
+def pitch_filter(semitones, voice=False):
+    """ffmpeg filter that moves the key by some semitones and keeps the speed.
+    rubberband sounds best (and keeps voices natural); not every ffmpeg has it, so there is a fallback."""
+    r = 2 ** (semitones / 12)
+    if has_ffmpeg_filter("rubberband"):
+        return f"rubberband=pitch={r:.6f}:pitchq=quality" + (":formant=preserved" if voice else "")
+    return f"aresample=44100,asetrate={44100 * r:.3f},aresample=44100,atempo={1 / r:.6f}"
+
+
+def key_folder(folder, semitones):
+    return folder / "key" / f"{semitones:+d}"
+
+
+def render_key(folder, semitones):
+    """Make the song's tracks in another key (kept in folder/key/+2/...). Only one other key is kept,
+    to save disk space. Returns the folder that holds the tracks."""
+    if semitones == 0:
+        return folder
+    dest = key_folder(folder, semitones)
+    for old in (folder / "key").glob("*") if (folder / "key").exists() else []:
+        if old != dest:
+            shutil.rmtree(old, ignore_errors=True)
+    dest.mkdir(parents=True, exist_ok=True)
+    # only the tracks the player uses: the singer + ad-libs, or the whole vocals when they are not split
+    split = (folder / "lead.mp3").exists() and (folder / "backing.mp3").exists()
+    names = ["instrumental.mp3"] + (["lead.mp3", "backing.mp3"] if split else ["vocals.mp3"])
+    todo = []
+    for name in names:
+        src, out = folder / name, dest / name
+        if src.exists() and not (out.exists() and out.stat().st_mtime >= src.stat().st_mtime):
+            todo.append(name)
+
+    def one(name):
+        tmp = dest / ("tmp-" + name)
+        r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(folder / name),
+                            "-af", pitch_filter(semitones, voice=name != "instrumental.mp3"),
+                            "-b:a", "320k", str(tmp)])
+        if r.returncode != 0 or not tmp.exists():
+            tmp.unlink(missing_ok=True)
+            return False
+        tmp.replace(dest / name)
+        return True
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, len(todo))) as pool:   # all tracks at the same time
+        results = list(pool.map(one, todo))
+    if not all(results):
+        die("Could not change the key of this song (ffmpeg failed - see the Kairokee window).")
+    return dest
+
+
+def mix_recording(folder, voice_file, start, latency, music_volume, semitones, out_file):
+    """Your singing + the music, from the moment you pressed Record, as one mp3.
+    start: song position (s) when recording began. latency: how much later the voice arrived (s)."""
+    music = key_folder(folder, semitones) / "instrumental.mp3" if semitones else folder / "instrumental.mp3"
+    if not music.exists():
+        music = folder / "instrumental.mp3"
+    vol = max(0.0, min(1.5, music_volume))
+    # the voice is moved earlier by the delay of speakers + microphone, then both are mixed
+    voice_chain = f"[1:a]atrim=start={max(0.0, latency):.3f},asetpts=PTS-STARTPTS,aresample=44100,volume=1.6[v]"
+    music_chain = f"[0:a]atrim=start={max(0.0, start):.3f},asetpts=PTS-STARTPTS,aresample=44100,volume={vol:.2f}[m]"
+    graph = f"{voice_chain};{music_chain};[m][v]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.95[out]"
+    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(music), "-i", str(voice_file),
+                        "-filter_complex", graph, "-map", "[out]", "-b:a", "256k", str(out_file)])
+    if r.returncode != 0 or not Path(out_file).exists():
+        die("Could not save the recording (ffmpeg failed - see the Kairokee window).")
+
+
 # --------------------------------------------------------------------------- 4. lyrics
 ARABIC = re.compile(r"[\u0600-\u06FF]")
 
@@ -541,14 +660,25 @@ def words_to_lines(words, max_words=9, max_gap=0.8):
             cur = []
     if cur:
         lines.append(cur)
-    return [(ln[0]["s"], " ".join(x["w"] for x in ln)) for ln in lines]
+    return [(ln[0]["s"], " ".join(x["w"] for x in ln), ln) for ln in lines]
+
+
+def _stamp(t):
+    m, sec = int(t // 60), t - 60 * int(t // 60)
+    return f"{m:02d}:{sec:05.2f}"
 
 
 def lines_to_lrc(lines):
+    """Lines -> LRC text. When the words' own times are known, they are written too
+    ("enhanced LRC": [00:08.56] <00:08.56>In <00:08.90>your ...), so the player can light up
+    each word exactly when it is sung."""
     out = []
-    for t, text in lines:
-        m, sec = int(t // 60), t - 60 * int(t // 60)
-        out.append(f"[{m:02d}:{sec:05.2f}] {text}")
+    for line in lines:
+        t, text = line[0], line[1]
+        words = line[2] if len(line) > 2 else None
+        if words:
+            text = " ".join(f"<{_stamp(w['s'])}>{w['w']}" for w in words)
+        out.append(f"[{_stamp(t)}] {text}")
     return "\n".join(out) + "\n"
 
 
@@ -717,9 +847,18 @@ def itunes_cover_url(queries, duration):
     pool = [c for c in pool if c.get("artworkUrl100") and relevance(c, query_tokens) >= MATCH_THRESHOLD]
     if not pool:
         return None
-    if duration:
-        pool.sort(key=lambda c: abs((c.get("trackTimeMillis") or 0) / 1000 - duration))
-    return pool[0]["artworkUrl100"].replace("100x100bb", "600x600bb")
+
+    def artist_known(c):   # the artist's name is in our search words (else it may be another song with this title)
+        return any(t in query_tokens for t in _tokens(c.get("artistName") or "") if len(t) > 2)
+
+    def length_diff(c):
+        return abs((c.get("trackTimeMillis") or 0) / 1000 - duration) if duration else 0
+
+    pool.sort(key=lambda c: (not artist_known(c), length_diff(c)))
+    best = pool[0]
+    if not artist_known(best) and (not duration or length_diff(best) > 10):
+        return None        # same title, unknown artist, different length: probably another song
+    return best["artworkUrl100"].replace("100x100bb", "600x600bb")
 
 
 def fetch_cover(folder, queries, duration=None, video_id=None):
@@ -750,7 +889,7 @@ def run_pipeline(video, query, keep="both", keep_temp=False, segment=None,
     folder.mkdir(parents=True, exist_ok=True)
 
     stage("download")
-    wav = download_audio(video, folder)
+    wav = import_audio(video["file"], folder) if video.get("file") else download_audio(video, folder)
 
     check_cancel()
     stage("separate")
@@ -790,7 +929,8 @@ def run_pipeline(video, query, keep="both", keep_temp=False, segment=None,
     else:
         print("      no synced lyrics found online.")
 
-    cover = fetch_cover(folder, queries, video.get("duration"), video.get("id"))
+    yt_id = video.get("id") if not str(video.get("id") or "").startswith("file:") else None
+    cover = fetch_cover(folder, queries, video.get("duration"), yt_id)
     print(f"      cover art: {cover or 'not found'}")
 
     # no synced lyrics online: write them from the singing itself
