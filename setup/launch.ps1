@@ -2,7 +2,8 @@
 # Written for the Windows PowerShell 5.1 that comes with Windows. Keep this file plain ASCII.
 param(
     [switch]$Phone,    # let phones on the same Wi-Fi open the app
-    [switch]$Repair    # throw away the installed packages and install them again
+    [switch]$Repair,   # throw away the installed packages and install them again
+    [switch]$SetupOnly # install everything but do not start (used by the automatic tests)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -555,7 +556,8 @@ try {
         $state = Update-YtDlp $state
     }
     Confirm-YouTubeHelpers
-    Start-Kairokee $state
+    if ($SetupOnly) { Write-Host 'Setup only: everything is installed. Not starting Kairokee.' -ForegroundColor Green }
+    else { Start-Kairokee $state }
 }
 catch {
     $exitCode = 1

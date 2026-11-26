@@ -31,7 +31,7 @@ if hasattr(sys.stdout, "reconfigure"):  # so Arabic / French titles print correc
 # The launcher sets KAIROKEE_DATA so that updating the code never touches songs or models.
 DATA = Path(os.environ.get("KAIROKEE_DATA") or Path(__file__).parent)
 OUT = DATA / "output"
-MODEL_DIR = DATA / "models"  # extra models are stored here
+MODEL_DIR = Path(os.environ.get("KAIROKEE_MODELS") or DATA / "models")  # the AI models are stored here
 if os.environ.get("KAIROKEE_DATA"):
     # keep the separation model (demucs) inside the data folder too, not in the user's profile
     os.environ.setdefault("TORCH_HOME", str(MODEL_DIR / "torch"))

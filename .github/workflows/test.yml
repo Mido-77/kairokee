@@ -1,0 +1,94 @@
+# Installs Kairokee from scratch on a clean Mac (Apple Silicon) and a clean Windows PC, the same way a
+# user does (double-click), then makes a test song and uses every main feature once (tools/smoke_test.py).
+#
+# Runs only when started by hand (Actions tab > "Install and test" > Run workflow) or when a version tag
+# (v2.1 ...) is pushed, because Mac minutes are expensive on private repos (they count 10x).
+# Note: GitHub's virtual Macs have no usable graphics chip, so this tests the processor (CPU) path.
+name: Install and test
+
+on:
+  workflow_dispatch:
+    inputs:
+      split:
+        description: "Also test the singer / ad-lib split (adds ~10 minutes per system)"
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+jobs:
+  mac:
+    name: Mac (Apple Silicon)
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Where to install
+        run: echo "KAIROKEE_HOME=$RUNNER_TEMP/kairokee-home" >> "$GITHUB_ENV"
+
+      - name: Setup (what Kairokee.command does the first time)
+        run: bash setup/launch.sh --setup-only
+
+      - name: Setup again (must be quick and change nothing)
+        run: bash setup/launch.sh --setup-only
+
+      - name: Make a spoken test sentence
+        run: say -o "$RUNNER_TEMP/voice.aiff" "Hello world. This is a karaoke test. We are singing along with the music tonight."
+
+      - name: Smoke test
+        run: |
+          "$KAIROKEE_HOME/venv/bin/python" tools/smoke_test.py --home "$KAIROKEE_HOME" \
+            --voice "$RUNNER_TEMP/voice.aiff" ${{ (github.event_name == 'push' || inputs.split) && '--split' || '' }}
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-logs
+          path: ${{ env.KAIROKEE_HOME }}/logs
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Where to install
+        shell: cmd
+        run: echo KAIROKEE_HOME=%RUNNER_TEMP%\kairokee-home>> "%GITHUB_ENV%"
+
+      - name: Setup (what Kairokee.bat does the first time)
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File setup\launch.ps1 -SetupOnly
+
+      - name: Setup again (must be quick and change nothing)
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File setup\launch.ps1 -SetupOnly
+
+      - name: Make a spoken test sentence
+        continue-on-error: true      # some Windows images have no voices; the test then runs without speech
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.Speech
+          $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+          $s.SetOutputToWaveFile("$env:RUNNER_TEMP\voice.wav")
+          $s.Speak('Hello world. This is a karaoke test. We are singing along with the music tonight.')
+          $s.Dispose()
+
+      - name: Smoke test
+        shell: cmd
+        run: |
+          set VOICE=
+          if exist "%RUNNER_TEMP%\voice.wav" set VOICE=--voice "%RUNNER_TEMP%\voice.wav"
+          "%KAIROKEE_HOME%\venv\Scripts\python.exe" tools\smoke_test.py --home "%KAIROKEE_HOME%" %VOICE% ${{ (github.event_name == 'push' || inputs.split) && '--split' || '' }}
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-logs
+          path: ${{ env.KAIROKEE_HOME }}\logs
+          if-no-files-found: ignore

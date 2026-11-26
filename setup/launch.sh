@@ -4,15 +4,18 @@
 #   launch.sh            start Kairokee (sets everything up the first time)
 #   launch.sh --phone    let phones on the same Wi-Fi open the app
 #   launch.sh --repair   throw away the installed packages and install them again
+#   launch.sh --setup-only   install everything but do not start (used by the automatic tests)
 
 set -u
 
 PHONE=0
 REPAIR=0
+SETUP_ONLY=0
 for a in ${1+"$@"}; do   # (this odd form keeps the old macOS bash happy when there are no arguments)
     case "$a" in
         --phone) PHONE=1 ;;
         --repair) REPAIR=1 ;;
+        --setup-only) SETUP_ONLY=1 ;;    # install everything, do not start (used by the automatic tests)
     esac
 done
 
@@ -405,4 +408,8 @@ else
     setup
 fi
 confirm_youtube_helpers
+if [ "$SETUP_ONLY" -eq 1 ]; then
+    echo "${C_GREEN}Setup only: everything is installed. Not starting Kairokee.${C_OFF}"
+    exit 0
+fi
 start_kairokee
