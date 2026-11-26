@@ -1,0 +1,1139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>kairokee</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --night: #151226;
+    --stage: #1f1a38;
+    --edge: #372c63;
+    --paper: #f4f0ff;
+    --dim: #a79fc9;
+    --faint: #6b6291;
+    --amber: #ffb84d;
+    --amber-ink: #2a1b00;
+    --danger: #ff8a8a;
+    --font: "Cairo", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--night);
+    color: var(--paper);
+    font-family: var(--font);
+    font-size: 1rem;
+    line-height: 1.5;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  button, input, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+
+  /* ---------- shared ---------- */
+  .wrap { max-width: 720px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+  .btn {
+    background: var(--stage); border: 1px solid var(--edge); border-radius: 999px;
+    padding: .45rem 1rem; font-weight: 600;
+  }
+  .btn:hover { border-color: var(--dim); }
+  .btn.primary { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .muted { color: var(--dim); }
+  .error { color: var(--danger); }
+
+  /* ---------- home ---------- */
+  .brand { font-size: 2.6rem; font-weight: 800; letter-spacing: -.02em; margin: 1.5rem 0 .25rem; }
+  .tagline { margin: 0 0 1.5rem; color: var(--dim); }
+  .searchbar { display: flex; gap: .5rem; }
+  .searchbar input {
+    flex: 1; min-width: 0; background: var(--stage); border: 1px solid var(--edge);
+    border-radius: 999px; padding: .65rem 1.1rem;
+  }
+  .searchbar input::placeholder { color: var(--faint); }
+  .status { min-height: 1.5rem; margin: .75rem .25rem 0; }
+
+  h2 { font-size: 1.1rem; font-weight: 600; margin: 2rem 0 .5rem; color: var(--dim); }
+  .list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--edge); }
+  .list li { display: flex; gap: .75rem; align-items: center; padding: .7rem .25rem; border-bottom: 1px solid var(--edge); }
+  .list .info { flex: 1; min-width: 0; }
+  .list .title { font-weight: 600; overflow-wrap: anywhere; }
+  .list .sub { font-size: .85rem; color: var(--dim); }
+  .list button.open { background: none; border: 0; text-align: start; padding: 0; width: 100%; }
+  .list button.open:hover .title { color: var(--amber); }
+
+  .progress { margin-top: 1.5rem; background: var(--stage); border: 1px solid var(--edge); border-radius: 1rem; padding: 1rem 1.25rem; }
+  .progress ol { margin: .5rem 0 0; padding: 0; list-style: none; }
+  .progress li { display: flex; gap: .6rem; padding: .2rem 0; color: var(--faint); }
+  .progress li.current { color: var(--paper); font-weight: 600; }
+  .progress li.done { color: var(--dim); }
+  .progress li .mark { width: 1.2rem; text-align: center; }
+  .spin { display: inline-block; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+  /* ---------- player ---------- */
+  #player { display: flex; flex-direction: column; height: 100dvh; max-width: 760px; margin: 0 auto; }
+  .topbar { display: flex; align-items: center; gap: .75rem; padding: .75rem 1.25rem; }
+  .topbar .name { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lyrics {
+    flex: 1; overflow-y: auto; padding: 38vh 1.25rem; text-align: center; scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent);
+            mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent);
+  }
+  .lyrics::-webkit-scrollbar { display: none; }
+  .line {
+    margin: 0 0 .9rem; font-size: clamp(1.4rem, 5.2vw, 2.3rem); font-weight: 800; line-height: 1.35;
+    color: var(--paper); opacity: .38; cursor: pointer; transition: opacity .25s;
+    overflow-wrap: anywhere;
+  }
+  .line.past { opacity: .22; }
+  .line.active { opacity: 1; }
+  .line.gap { color: var(--faint); }
+  .line .w { transition: color .12s; }
+  .line .w.sung { color: var(--amber); }
+  .empty { padding: 2rem 1.25rem; text-align: center; color: var(--dim); }
+  .empty .btn { margin-top: .75rem; }
+
+  .dock { padding: .75rem 1.25rem 1rem; background: linear-gradient(transparent, var(--night) 30%); }
+  .transport { display: flex; align-items: center; gap: .75rem; }
+  .playbtn {
+    width: 3.4rem; height: 3.4rem; border-radius: 50%; border: 0; background: var(--amber); color: var(--amber-ink);
+    font-size: 1.3rem; display: grid; place-items: center; flex: none;
+  }
+  .time { font-variant-numeric: tabular-nums; color: var(--dim); font-size: .85rem; min-width: 2.6rem; }
+  input[type=range] { flex: 1; min-width: 0; accent-color: var(--amber); height: 1.5rem; }
+  .row { display: flex; align-items: center; gap: .6rem; margin-top: .7rem; flex-wrap: wrap; }
+  .row label { color: var(--dim); font-size: .9rem; min-width: 7rem; }
+  .row .val { font-variant-numeric: tabular-nums; min-width: 3.4rem; text-align: end; font-size: .9rem; }
+  .nudge { padding: .15rem .6rem; font-size: .85rem; }
+
+  dialog { background: var(--stage); color: var(--paper); border: 1px solid var(--edge); border-radius: 1rem; width: min(640px, 92vw); padding: 1.25rem; }
+  dialog::backdrop { background: rgba(10, 8, 20, .7); }
+  dialog textarea {
+    width: 100%; height: 50vh; background: var(--night); border: 1px solid var(--edge); border-radius: .6rem;
+    padding: .7rem; font-family: ui-monospace, Consolas, monospace; font-size: .9rem; line-height: 1.5; resize: vertical;
+  }
+  dialog .actions { display: flex; gap: .5rem; justify-content: flex-end; margin-top: .75rem; }
+
+  /* cover art + background */
+  .cover { width: 2.6rem; height: 2.6rem; border-radius: .5rem; object-fit: cover; flex: none; background: var(--stage); }
+  #bg { position: fixed; inset: 0; z-index: -1; background-size: cover; background-position: center;
+        filter: blur(48px) saturate(1.2); transform: scale(1.3); opacity: .3; pointer-events: none; }
+  .list .thumb { width: 3rem; height: 3rem; border-radius: .5rem; object-fit: cover; flex: none; background: var(--stage);
+                 display: grid; place-items: center; color: var(--faint); }
+  .list button.open { display: flex; align-items: center; gap: .75rem; }
+
+  /* mixer */
+  .mix { display: flex; align-items: center; gap: .6rem; margin-top: .55rem; }
+  .mix label { color: var(--dim); font-size: .9rem; width: 8.4rem; flex: none; }
+  .mix .val { min-width: 2.8rem; text-align: end; font-size: .9rem; font-variant-numeric: tabular-nums; }
+  .tgl { min-width: 3.4rem; padding: .2rem .7rem; font-size: .85rem; flex: none; }
+  .tgl[aria-pressed="true"] { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); }
+  .tgl:disabled { cursor: default; }
+  .spacer { width: 3.4rem; flex: none; }
+  input[type=range]:disabled { opacity: .35; }
+  .hint { font-size: .8rem; color: var(--faint); margin: .1rem 0 0 9rem; min-height: 1.2rem; }
+  .timing { display: flex; align-items: center; gap: .5rem; margin-top: .9rem; flex-wrap: wrap; }
+  .timing label { color: var(--dim); font-size: .9rem; width: 8.4rem; flex: none; }
+  .timing .val { font-size: .9rem; font-variant-numeric: tabular-nums; min-width: 3.4rem; text-align: end; margin-inline-start: auto; }
+
+  /* progress details */
+  .progress li .body { flex: 1; min-width: 0; }
+  .progress .detail { font-size: .85rem; color: var(--dim); font-weight: 400; }
+  .bar { height: 4px; background: var(--edge); border-radius: 2px; overflow: hidden; position: relative; margin-top: .45rem; }
+  .bar::after { content: ""; position: absolute; top: 0; bottom: 0; left: -40%; width: 40%; background: var(--amber);
+                border-radius: 2px; animation: slide 1.4s ease-in-out infinite; }
+  @keyframes slide { to { left: 100%; } }
+  @media (prefers-reduced-motion: reduce) { .bar::after { animation: none; left: 0; width: 100%; opacity: .6; } }
+
+  /* choice dialog */
+  .choice { display: block; width: 100%; text-align: start; background: var(--night); border: 1px solid var(--edge);
+            border-radius: .8rem; padding: .8rem 1rem; margin-top: .6rem; }
+  .choice:hover { border-color: var(--amber); }
+  .choice strong { display: block; }
+  .choice span { color: var(--dim); font-size: .9rem; }
+  #modeDialog { width: min(480px, 92vw); }
+
+  /* wide screens: player and controls on the left, lyrics on the right */
+  @media (min-width: 900px) {
+    #player {
+      max-width: none; margin: 0; display: grid; height: 100dvh;
+      grid-template-columns: 420px minmax(0, 1fr); grid-template-rows: auto 1fr;
+      grid-template-areas: "top lyrics" "dock lyrics";
+    }
+    .lyrics { grid-area: lyrics; padding: 40vh 3rem; }
+    .line { font-size: clamp(1.8rem, 3.2vw, 3rem); }
+    .topbar {
+      grid-area: top; flex-wrap: wrap; justify-content: space-between; padding: 1rem 1.25rem .25rem;
+      border-inline-end: 1px solid var(--edge); background: rgba(31, 26, 56, .55); backdrop-filter: blur(12px);
+    }
+    #backBtn { order: 1; }
+    #editBtn { order: 2; }
+    .topbar .cover { order: 3; flex-basis: 100%; width: min(100%, 30vh); max-width: 260px; height: auto; aspect-ratio: 1;
+                     margin: .5rem auto 0; border-radius: .9rem; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); }
+    .topbar .name { order: 4; flex-basis: 100%; text-align: center; white-space: normal; margin-top: .25rem; }
+    .dock {
+      grid-area: dock; overflow-y: auto; padding: .5rem 1.25rem 1.25rem;
+      border-inline-end: 1px solid var(--edge); background: rgba(31, 26, 56, .55); backdrop-filter: blur(12px);
+    }
+  }
+
+  #lyricsDialog { width: min(640px, 94vw); }
+  .cand { border: 1px solid var(--edge); border-radius: .8rem; padding: .7rem .9rem; margin-top: .6rem; background: var(--night); }
+  .cand.other { opacity: .65; }
+  .cand .t { font-weight: 600; overflow-wrap: anywhere; }
+  .cand .m { font-size: .85rem; color: var(--dim); }
+  .cand .p { font-size: .95rem; margin: .4rem 0; line-height: 1.5; }
+  select.btn { font: inherit; color: inherit; padding: .3rem .6rem; }
+  select.btn option { background: var(--stage); color: var(--paper); }
+</style>
+</head>
+<body>
+
+<!-- ======================= HOME ======================= -->
+<main id="home" class="wrap">
+  <h1 class="brand">kairokee</h1>
+  <p class="tagline">Search a song. Get the instrumental and the lyrics, in sync.</p>
+  <p id="deviceNote" class="muted" style="margin-top:-.5rem;font-size:.9rem" hidden></p>
+
+  <form id="searchForm" class="searchbar">
+    <input id="q" type="search" placeholder="Song and artist" autocomplete="off" aria-label="Song and artist">
+    <button class="btn primary" type="submit">Search</button>
+  </form>
+  <div id="status" class="status muted" role="status"></div>
+
+  <section id="progress" class="progress" hidden>
+    <div id="progressTitle" class="title"></div>
+    <ol id="steps"></ol>
+    <div id="jobError" class="error" hidden></div>
+  </section>
+
+  <section id="resultsBox" hidden>
+    <h2>Results</h2>
+    <ul id="results" class="list"></ul>
+  </section>
+
+  <section id="libraryBox" hidden>
+    <h2>Your songs</h2>
+    <ul id="library" class="list"></ul>
+  </section>
+</main>
+
+<!-- ======================= PLAYER ======================= -->
+<section id="player" hidden>
+  <div id="bg" aria-hidden="true"></div>
+  <div class="topbar">
+    <button id="backBtn" class="btn" type="button">Back</button>
+    <img id="cover" class="cover" alt="" hidden>
+    <div id="songName" class="name"></div>
+    <button id="editBtn" class="btn" type="button">Edit lyrics</button>
+  </div>
+
+  <div id="lyrics" class="lyrics" aria-live="off"></div>
+
+  <div class="dock">
+    <div class="transport">
+      <button id="playBtn" class="playbtn" type="button" aria-label="Play">&#9654;</button>
+      <span id="tNow" class="time">0:00</span>
+      <input id="seek" type="range" min="0" max="1" step="0.1" value="0" aria-label="Position">
+      <span id="tTotal" class="time">0:00</span>
+    </div>
+    <div class="mix">
+      <label for="vMusic">Music</label>
+      <span class="spacer"></span>
+      <input id="vMusic" type="range" min="0" max="100" step="1" value="100">
+      <span id="vMusicVal" class="val">100%</span>
+    </div>
+    <div id="rowLead" class="mix" hidden>
+      <label for="vLead">Singer's voice</label>
+      <button id="tglLead" class="btn tgl" type="button" aria-pressed="false">Off</button>
+      <input id="vLead" type="range" min="0" max="100" step="1" value="100" disabled>
+      <span id="vLeadVal" class="val">Off</span>
+    </div>
+    <div id="rowBack" class="mix" hidden>
+      <label for="vBack">Ad-libs and backing</label>
+      <button id="tglBack" class="btn tgl" type="button" aria-pressed="false">Off</button>
+      <input id="vBack" type="range" min="0" max="100" step="1" value="100" disabled>
+      <span id="vBackVal" class="val">Off</span>
+    </div>
+    <div id="backHint" class="hint"></div>
+    <div id="noVocals" class="hint" style="margin-left:0" hidden>
+      This song was saved with the instrumental only, so there are no singer controls.
+      Search it again and press Make karaoke to get them.
+    </div>
+    <div id="splitRow" class="mix" hidden style="flex-wrap:wrap">
+      <button id="splitBtn" class="btn" type="button">Separate ad-libs from the singer</button>
+      <span id="splitMsg" class="muted" style="font-size:.85rem"></span>
+    </div>
+
+    <div id="lyricsRow" class="mix" hidden style="flex-wrap:wrap">
+      <label for="langSel">Lyrics from audio</label>
+      <select id="langSel" class="btn" aria-label="Language of the song">
+        <option value="">Auto language</option>
+        <option value="ar">Arabic</option>
+        <option value="en">English</option>
+        <option value="fr">French</option>
+      </select>
+      <button id="genBtn" class="btn" type="button">Write lyrics</button>
+      <span id="genMsg" class="muted" style="font-size:.85rem;flex-basis:100%"></span>
+    </div>
+    <div id="lyricsNote" class="hint" style="margin-left:0" hidden></div>
+    <div class="mix" style="flex-wrap:wrap">
+      <label>Lyrics source</label>
+      <button id="onlineBtn" class="btn" type="button">Find online lyrics</button>
+      <button id="restoreBtn" class="btn" type="button" hidden>Restore previous lyrics</button>
+      <span id="srcMsg" class="muted" style="font-size:.85rem;flex-basis:100%"></span>
+    </div>
+
+    <div class="timing">
+      <label for="offset">Lyrics timing</label>
+      <button class="btn nudge" type="button" data-nudge="-1">-1s</button>
+      <button class="btn nudge" type="button" data-nudge="-0.1">-0.1</button>
+      <button class="btn nudge" type="button" data-nudge="0.1">+0.1</button>
+      <button class="btn nudge" type="button" data-nudge="1">+1s</button>
+      <button id="offsetZero" class="btn nudge" type="button">Reset to 0</button>
+      <span id="offsetVal" class="val">0.0s</span>
+      <input id="offset" type="range" min="-15" max="15" step="0.1" value="0" style="flex-basis:100%">
+    </div>
+    <div class="muted" style="font-size:.8rem;margin-top:.4rem">
+      Lyrics appearing too early? Move the timing up (+). Too late? Move it down (-).
+    </div>
+  </div>
+</section>
+
+<dialog id="modeDialog">
+  <h2 style="margin-top:0">How should the vocals be saved?</h2>
+  <p id="modeTitle" class="muted" style="margin-top:0;overflow-wrap:anywhere"></p>
+  <p id="modeNote" class="muted" style="font-size:.9rem" hidden></p>
+  <button id="modeSplit" class="choice" type="button">
+    <strong>Singer and ad-libs separately</strong>
+    <span id="modeSplitInfo">You can switch the ad-libs on or off on their own. Takes a few minutes longer.</span>
+  </button>
+  <button id="modeWhole" class="choice" type="button">
+    <strong>Whole vocals</strong>
+    <span id="modeWholeInfo">One vocals track, ad-libs included. Faster.</span>
+  </button>
+  <div class="actions"><button id="modeCancel" class="btn" type="button">Cancel</button></div>
+</dialog>
+
+<dialog id="lyricsDialog">
+  <h2 style="margin-top:0">Choose the lyrics</h2>
+  <p class="muted" style="margin-top:0">Best match first. Check that the first lines are really from this song.</p>
+  <div id="candList"></div>
+  <div class="actions"><button id="candClose" class="btn" type="button">Close</button></div>
+</dialog>
+
+<dialog id="editDialog">
+  <h2 style="margin-top:0">Edit lyrics</h2>
+  <p class="muted" style="margin-top:0">One line per lyric, each starting with its time, like <code>[01:23.45] text</code>.</p>
+  <textarea id="editText" spellcheck="false"></textarea>
+  <div class="actions">
+    <button id="editCancel" class="btn" type="button">Cancel</button>
+    <button id="editSave" class="btn primary" type="button">Save lyrics</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { msg = (await r.json()).detail || msg; } catch (_) {}
+    if (r.status === 404 && msg === "Not Found") {
+      msg = "The server does not know this feature yet. Replace server.py and kairokee.py with the new files, " +
+            "then stop the server (Ctrl+C) and start it again with: python server.py";
+    }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+const postJSON = (url, body) =>
+  api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+function fmt(sec) {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m + ":" + String(s).padStart(2, "0");
+}
+const ARABIC = /[\u0600-\u06FF]/;
+
+/* =====================================================================
+   LRC parsing and line lookup (pure functions)
+   ===================================================================== */
+function parseLRC(text) {
+  const out = [];
+  for (const raw of (text || "").split(/\r?\n/)) {
+    const stamps = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
+    if (!stamps.length) continue;
+    const words = raw.replace(/\[[^\]]*\]/g, "").trim();
+    for (const m of stamps) out.push({ t: parseInt(m[1], 10) * 60 + parseFloat(m[2]), text: words });
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+// index of the last line whose time is <= t, or -1
+function findLine(lines, t) {
+  let lo = 0, hi = lines.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].t <= t) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  return ans;
+}
+
+/* =====================================================================
+   HOME: search, make karaoke, library
+   ===================================================================== */
+const STEPS = [
+  ["download", "Downloading the song"],
+  ["separate", "Separating the voice from the music"],
+  ["encode", "Saving the tracks"],
+  ["split", "Splitting the singer from the ad-libs"],
+  ["lyrics", "Finding the lyrics and cover art"],
+  ["transcribe", "Writing the lyrics from the vocals"],
+];
+let busy = false;
+
+function setStatus(msg, isError) {
+  const el = $("#status");
+  el.textContent = msg || "";
+  el.className = "status " + (isError ? "error" : "muted");
+}
+
+$("#searchForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("#q").value.trim();
+  if (!q) return;
+  setStatus("Searching...");
+  $("#resultsBox").hidden = true;
+  try {
+    const results = await api("/api/search?q=" + encodeURIComponent(q));
+    setStatus(results.length ? "" : "Nothing found. Try the song name and the artist.");
+    renderResults(results, q);
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+});
+
+function renderResults(results, query) {
+  const ul = $("#results");
+  ul.replaceChildren();
+  for (const r of results) {
+    const li = document.createElement("li");
+    const info = document.createElement("div");
+    info.className = "info";
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = r.title;
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = r.channel + "  -  " + fmt(r.duration);
+    info.append(title, sub);
+    const btn = document.createElement("button");
+    btn.className = "btn primary";
+    btn.type = "button";
+    btn.textContent = "Make karaoke";
+    btn.addEventListener("click", () => askMode(r, query));
+    li.append(info, btn);
+    ul.append(li);
+  }
+  $("#resultsBox").hidden = results.length === 0;
+}
+
+/* ---------- this computer: fast graphics card or not, and how long things take ---------- */
+let machine = { device: "cuda", perMinute: { fast: 15, split: 30, transcribe: 20 } };
+api("/api/config").then((c) => { machine = c; showDeviceNote(); }).catch(() => {});
+
+function showDeviceNote() {
+  const el = $("#deviceNote");
+  el.hidden = machine.device === "cuda";
+  el.textContent = "This computer has no fast NVIDIA graphics card, so Kairokee uses the processor. " +
+    "It works, but songs take longer. You will see the expected time before you start.";
+}
+
+// seconds -> "about 4 min", "less than a minute", "about 1 h 10 min"
+function etaText(sec) {
+  const min = sec / 60;
+  if (min < 1) return "less than a minute";
+  if (min < 10) return "about " + Math.round(min) + " min";
+  if (min < 60) return "about " + Math.round(min / 5) * 5 + " min";
+  const h = Math.floor(min / 60), r = Math.round((min % 60) / 10) * 10;
+  return "about " + (r === 60 ? h + 1 : h) + " h" + (r && r !== 60 ? " " + r + " min" : "");
+}
+// expected waiting time in seconds for a step ("fast", "split", "transcribe") and a song length in seconds
+function etaFor(kind, durationSec) {
+  return (machine.perMinute[kind] || 0) * ((durationSec || 210) / 60);
+}
+
+/* ---------- choose how to save the vocals ---------- */
+let pending = null;
+function askMode(video, query) {
+  if (busy) return;
+  pending = { video, query };
+  $("#modeTitle").textContent = video.title;
+  const fast = etaFor("fast", video.duration), split = etaFor("split", video.duration);
+  const slow = machine.device !== "cuda" && split > 8 * 60;
+  $("#modeWholeInfo").textContent = "One vocals track, ad-libs included. " +
+    (slow ? "Recommended on this computer. " : "") + "Takes " + etaText(fast) + " on this computer.";
+  $("#modeSplitInfo").textContent = "You can switch the ad-libs on or off on their own. Takes " +
+    etaText(fast + split) + " on this computer.";
+  $("#modeNote").hidden = !slow;
+  $("#modeNote").textContent = slow
+    ? "This computer has no fast graphics card, so separating the ad-libs is slow here. " +
+      "You can still do it later, only for the songs you really want, from the song page."
+    : "";
+  if (slow) $("#modeSplit").before($("#modeWhole")); else $("#modeSplit").after($("#modeWhole"));
+  $("#modeDialog").showModal();
+}
+$("#modeCancel").addEventListener("click", () => $("#modeDialog").close());
+$("#modeSplit").addEventListener("click", () => { $("#modeDialog").close(); startJob(pending.video, pending.query, true); });
+$("#modeWhole").addEventListener("click", () => { $("#modeDialog").close(); startJob(pending.video, pending.query, false); });
+
+/* ---------- progress panel ---------- */
+const HINTS = {
+  download: "Usually a few seconds.",
+  separate: "Usually under a minute.",
+  encode: "Almost instant.",
+  split: "Splitting now. This takes a few minutes. The app is working, it is not frozen.",
+  lyrics: "Almost done.",
+  transcribe: "Writing the lyrics from the vocals. This takes a few minutes. The app is working, it is not frozen.",
+};
+let prog = null;   // {withSplit, stage, since, detail, failed, duration}
+
+function hintFor(key) {
+  const dur = prog && prog.duration;
+  if (key === "separate" && machine.device !== "cuda") {
+    return "This computer uses the processor, so this step takes a few minutes. The app is working, it is not frozen.";
+  }
+  if (key === "split") {
+    return "Splitting now. Expected: " + etaText(etaFor("split", dur)) + " on this computer. The app is working, it is not frozen.";
+  }
+  if (key === "transcribe") {
+    return "Writing the lyrics from the vocals. Expected: " + etaText(etaFor("transcribe", dur)) + " on this computer. The app is working, it is not frozen.";
+  }
+  return HINTS[key] || "";
+}
+
+function renderProgress() {
+  if (!prog) return;
+  const ol = $("#steps");
+  ol.replaceChildren();
+  // the "split" step only if chosen; the "transcribe" step only if no online lyrics were found
+  const steps = STEPS.filter(([key]) =>
+    (prog.withSplit || key !== "split") && (key !== "transcribe" || prog.stage === "transcribe"));
+  const idx = steps.findIndex((x) => x[0] === prog.stage);
+  steps.forEach(([key, label], i) => {
+    const li = document.createElement("li");
+    const mark = document.createElement("span");
+    mark.className = "mark";
+    const body = document.createElement("div");
+    body.className = "body";
+    body.append(document.createTextNode(label));
+    if (i < idx) { li.className = "done"; mark.textContent = "\u2713"; }
+    else if (i === idx) {
+      li.className = "current";
+      if (prog.failed) { mark.textContent = "!"; }
+      else {
+        mark.className = "mark spin";
+        mark.textContent = "\u25D0";
+        const d = document.createElement("div");
+        d.className = "detail";
+        const elapsed = fmt((Date.now() - prog.since) / 1000);
+        d.textContent = (prog.detail || hintFor(key)) + "  (" + elapsed + ")";
+        body.append(d);
+        if (key === "split" || key === "separate" || key === "transcribe") {
+          const bar = document.createElement("div");
+          bar.className = "bar";
+          body.append(bar);
+        }
+      }
+    } else { mark.textContent = "\u2022"; }
+    li.append(mark, body);
+    ol.append(li);
+  });
+}
+setInterval(renderProgress, 1000);   // keeps the elapsed time ticking so it never looks frozen
+
+function setStage(stage, detail, failed) {
+  if (!prog) return;
+  if (stage !== prog.stage) { prog.stage = stage; prog.since = Date.now(); }
+  prog.detail = detail || "";
+  prog.failed = !!failed;
+  renderProgress();
+}
+
+async function startJob(video, query, withSplit) {
+  if (busy) return;
+  busy = true;
+  prog = { withSplit, stage: "download", since: Date.now(), detail: "", failed: false, duration: video.duration || null };
+  $("#progress").hidden = false;
+  $("#jobError").hidden = true;
+  $("#progressTitle").textContent = video.title;
+  renderProgress();
+  $("#progress").scrollIntoView({ behavior: "smooth", block: "start" });
+  try {
+    const { job } = await postJSON("/api/process", {
+      id: video.id, title: video.title, url: video.url, channel: video.channel || "",
+      duration: video.duration || null, query, split: withSplit,
+    });
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const j = await api("/api/job/" + job);
+      if (j.state === "error") { setStage(j.stage, "", true); throw new Error(j.error); }
+      setStage(j.stage, j.detail);
+      if (j.state === "done") {
+        prog = null; busy = false;
+        $("#progress").hidden = true;
+        await loadLibrary();
+        openSong(j.slug);
+        return;
+      }
+    }
+  } catch (err) {
+    busy = false;
+    const el = $("#jobError");
+    el.hidden = false;
+    el.textContent = err.message + " (details are in the terminal where server.py is running)";
+  }
+}
+
+async function loadLibrary() {
+  try {
+    const songs = await api("/api/library");
+    const ul = $("#library");
+    ul.replaceChildren();
+    for (const s of songs) {
+      const li = document.createElement("li");
+      const b = document.createElement("button");
+      b.className = "open";
+      b.type = "button";
+      let thumb;
+      if (s.hasCover) {
+        thumb = document.createElement("img");
+        thumb.src = "/files/" + encodeURIComponent(s.slug) + "/cover.jpg";
+        thumb.alt = "";
+      } else {
+        thumb = document.createElement("div");
+        thumb.textContent = "\u266A";
+      }
+      thumb.className = "thumb";
+      const info = document.createElement("div");
+      info.className = "info";
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = s.title;
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = s.hasLyrics ? "Instrumental with lyrics" : "Instrumental, no synced lyrics yet";
+      info.append(title, sub);
+      b.append(thumb, info);
+      b.addEventListener("click", () => openSong(s.slug));
+      li.append(b);
+      ul.append(li);
+    }
+    $("#libraryBox").hidden = songs.length === 0;
+  } catch (_) { /* library is optional */ }
+}
+
+/* =====================================================================
+   PLAYER
+   ===================================================================== */
+let song = null;          // {slug, title, hasVocals, hasLead, hasCover, ...}
+let lines = [];           // parsed lyrics
+let lineEls = [];
+let offset = 0;           // seconds added to every lyric time (+ = lyrics appear later)
+let ctx = null;
+let stems = [];           // [{key: "music" | "lead" | "back", el, gain}]
+let raf = 0, activeIdx = -2, dragging = false, saveTimer = 0;
+let seeking = false, resumeAfterSeek = false, seekToken = 0;   // jump-to-position state (see seekTo)
+const mix = { music: 100, lead: 100, back: 100, leadOn: false, backOn: false };
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const stem = (key) => stems.find((x) => x.key === key);
+const master = () => (stem("music") ? stem("music").el : null);
+const enc = encodeURIComponent;
+
+async function openSong(slug) {
+  let data;
+  try { data = await api("/api/song/" + enc(slug)); }
+  catch (err) { setStatus(err.message, true); return; }
+  teardown();
+  song = data;
+  lines = parseLRC(data.lyrics);
+  offset = Number(data.offset) || 0;
+  mix.leadOn = false;
+  mix.backOn = false;
+
+  $("#home").hidden = true;
+  $("#player").hidden = false;
+  $("#songName").textContent = data.title;
+  setOffsetUI();
+  renderLyrics();
+  setCover(data.slug, data.hasCover);
+  setupAudio();
+  $("#splitRow").hidden = !(data.hasVocals && !data.hasLead);
+  $("#noVocals").hidden = data.hasVocals;
+  $("#lyricsRow").hidden = !data.hasVocals;
+  $("#restoreBtn").hidden = !data.hasPrevious;
+  $("#onlineBtn").disabled = false;
+  $("#restoreBtn").disabled = false;
+  $("#srcMsg").textContent = "";
+  $("#genBtn").disabled = false;
+  $("#genMsg").textContent = "Takes " + etaText(etaFor("transcribe", data.duration)) + " on this computer.";
+  const generated = !!(data.source && data.source.startsWith("Written by the app"));
+  $("#lyricsNote").hidden = !(data.source && data.lyrics);
+  $("#lyricsNote").textContent = generated
+    ? "These lyrics were written by the app from the audio, so some words may be wrong. Use Edit lyrics to fix them."
+    : data.source ? "Lyrics from: " + data.source + ". Wrong song? Press Find online lyrics to choose another." : "";
+  $("#splitMsg").textContent = "Takes " + etaText(etaFor("split", data.duration)) + " on this computer.";
+  $("#splitBtn").disabled = false;
+  history.replaceState(null, "", "#" + enc(slug));
+
+  if (!data.hasCover) {
+    postJSON("/api/song/" + enc(slug) + "/cover", {})
+      .then((r) => { if (r.ok && song && song.slug === slug) { song.hasCover = true; setCover(slug, true); } })
+      .catch(() => {});
+  }
+}
+
+function setCover(slug, has) {
+  const img = $("#cover"), bg = $("#bg");
+  if (has) {
+    const url = "/files/" + enc(slug) + "/cover.jpg?v=" + Date.now();
+    img.src = url;
+    img.hidden = false;
+    bg.style.backgroundImage = 'url("' + url + '")';
+  } else {
+    img.hidden = true;
+    img.removeAttribute("src");
+    bg.style.backgroundImage = "none";
+  }
+}
+
+function setupAudio() {
+  const base = "/files/" + enc(song.slug) + "/";
+  // Web Audio gives real volume control on phones too (iOS ignores audio.volume)
+  const AC = window.AudioContext || window.webkitAudioContext;
+  ctx = new AC();
+  const add = (key, file) => {
+    const el = new Audio(base + file);
+    el.preload = "auto";
+    const gain = ctx.createGain();
+    ctx.createMediaElementSource(el).connect(gain).connect(ctx.destination);
+    stems.push({ key, el, gain });
+  };
+  add("music", "instrumental.mp3");
+  if (song.hasLead) { add("lead", "lead.mp3"); add("back", "backing.mp3"); }
+  else if (song.hasVocals) { add("lead", "vocals.mp3"); }
+
+  const m = master();
+  m.addEventListener("loadedmetadata", () => {
+    $("#seek").max = m.duration;
+    $("#tTotal").textContent = fmt(m.duration);
+  });
+  m.addEventListener("ended", () => { stems.forEach((x) => x.el.pause()); syncPlayButton(); });
+  m.addEventListener("error", () => alert("Could not load the instrumental file."));
+  $("#seek").value = 0;
+  $("#tNow").textContent = "0:00";
+  applyMix();
+  syncPlayButton();
+  cancelAnimationFrame(raf);
+  raf = requestAnimationFrame(tick);
+}
+
+function teardown() {
+  cancelAnimationFrame(raf);
+  for (const x of stems) { x.el.pause(); x.el.removeAttribute("src"); x.el.load(); }
+  stems = [];
+  seeking = false; resumeAfterSeek = false; seekToken++;
+  if (ctx) ctx.close().catch(() => {});
+  ctx = null;
+  activeIdx = -2;
+}
+
+function syncPlayButton() {
+  const m = master();
+  const playing = m && (seeking ? resumeAfterSeek : !m.paused);
+  const b = $("#playBtn");
+  b.innerHTML = playing ? "&#10074;&#10074;" : "&#9654;";
+  b.setAttribute("aria-label", playing ? "Pause" : "Play");
+}
+
+async function togglePlay() {
+  const m = master();
+  if (!m) return;
+  if (seeking) { resumeAfterSeek = !resumeAfterSeek; syncPlayButton(); return; }
+  try {
+    await ctx.resume();
+    if (m.paused) {
+      stems.forEach((x) => { if (x.el !== m) x.el.currentTime = m.currentTime; });
+      await Promise.all(stems.map((x) => x.el.play()));
+    } else {
+      stems.forEach((x) => x.el.pause());
+    }
+  } catch (err) { console.error(err); }
+  syncPlayButton();
+}
+
+// Jump to time t. All tracks (music, singer, ad-libs) are paused, moved, and only restarted
+// together once every one of them has arrived. This stops the singer track from lagging behind
+// (and from being "corrected" again and again while it is still loading).
+async function seekTo(t) {
+  const m = master();
+  if (!m) return;
+  t = Math.max(0, Math.min(t, m.duration || t));
+  const token = ++seekToken;
+  if (!seeking) resumeAfterSeek = !m.paused;     // remember playing/paused only at the start of a jump
+  seeking = true;
+  stems.forEach((x) => x.el.pause());
+  syncPlayButton();
+  await Promise.all(stems.map((x) => new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      x.el.removeEventListener("seeked", finish);
+      resolve();
+    };
+    x.el.addEventListener("seeked", finish);
+    setTimeout(finish, 2000);                    // never wait forever
+    x.el.currentTime = t;
+  })));
+  if (token !== seekToken) return;               // a newer jump took over
+  seeking = false;
+  const resume = resumeAfterSeek;
+  resumeAfterSeek = false;
+  if (resume) {
+    try { await Promise.all(stems.map((x) => x.el.play())); } catch (err) { console.error(err); }
+  }
+  syncPlayButton();
+}
+
+function tick() {
+  const m = master();
+  if (m) {
+    const now = m.currentTime;
+    if (!dragging) $("#seek").value = now;
+    $("#tNow").textContent = fmt(now);
+    if (!m.paused && !seeking) {
+      const t = performance.now();
+      for (const x of stems) {
+        if (x.el === m || x.el.seeking || x.el.readyState < 3) continue;   // still loading: leave it alone
+        if (Math.abs(x.el.currentTime - now) > 0.15 && t - (x.fixedAt || 0) > 1000) {
+          x.el.currentTime = now;
+          x.fixedAt = t;
+        }
+      }
+    }
+    updateLyrics(now);
+  }
+  raf = requestAnimationFrame(tick);
+}
+
+/* ---------- mixer: music / singer / ad-libs ---------- */
+function setToggle(btn, on, disabled) {
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.textContent = on ? "On" : "Off";
+  btn.disabled = !!disabled;
+}
+function applyMix() {
+  const backActive = mix.leadOn || mix.backOn;   // ad-libs always play together with the singer
+  const setGain = (key, v) => { const x = stem(key); if (x) x.gain.gain.value = v; };
+  setGain("music", mix.music / 100);
+  setGain("lead", mix.leadOn ? mix.lead / 100 : 0);
+  setGain("back", backActive ? mix.back / 100 : 0);
+
+  const hasLead = !!stem("lead"), hasBack = !!stem("back");
+  $("#rowLead").hidden = !hasLead;
+  $("#rowBack").hidden = !hasBack;
+  $("#vMusic").value = mix.music;
+  $("#vMusicVal").textContent = mix.music + "%";
+  setToggle($("#tglLead"), mix.leadOn, false);
+  $("#vLead").value = mix.lead;
+  $("#vLead").disabled = !mix.leadOn;
+  $("#vLeadVal").textContent = mix.leadOn ? mix.lead + "%" : "Off";
+  setToggle($("#tglBack"), backActive, mix.leadOn);
+  $("#vBack").value = mix.back;
+  $("#vBack").disabled = !backActive;
+  $("#vBackVal").textContent = backActive ? mix.back + "%" : "Off";
+  $("#backHint").textContent = !hasBack ? "" :
+    mix.leadOn ? "Ad-libs are on automatically while the singer's voice is on."
+               : "Turn on the ad-libs to hear them with the music, without the singer.";
+}
+$("#vMusic").addEventListener("input", (e) => { mix.music = +e.target.value; applyMix(); });
+$("#vLead").addEventListener("input", (e) => { mix.lead = +e.target.value; applyMix(); });
+$("#vBack").addEventListener("input", (e) => { mix.back = +e.target.value; applyMix(); });
+$("#tglLead").addEventListener("click", () => { mix.leadOn = !mix.leadOn; applyMix(); });
+$("#tglBack").addEventListener("click", () => { mix.backOn = !mix.backOn; applyMix(); });
+
+/* ---------- separate ad-libs for songs made before this feature ---------- */
+$("#splitBtn").addEventListener("click", async () => {
+  const btn = $("#splitBtn"), msg = $("#splitMsg"), slug = song.slug;
+  btn.disabled = true;
+  msg.className = "muted";
+  msg.textContent = "Starting...";
+  const t0 = Date.now();
+  try {
+    const { job } = await api("/api/song/" + enc(slug) + "/split", { method: "POST" });
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const j = await api("/api/job/" + job);
+      if (j.state === "error") throw new Error(j.error);
+      if (j.state === "done") break;
+      msg.textContent = (j.detail || "Working...") + "  (" + fmt((Date.now() - t0) / 1000) + ")";
+    }
+    await openSong(slug);
+  } catch (err) {
+    msg.className = "error";
+    msg.textContent = err.message;
+    btn.disabled = false;
+  }
+});
+
+/* ---------- write lyrics from the vocals ---------- */
+$("#genBtn").addEventListener("click", async () => {
+  if (lines.length && !confirm("This replaces the current lyrics with lyrics written by the app from the audio. They are usually less accurate than lyrics found online (especially for Arabic songs). You can restore the current lyrics afterwards. Continue?")) return;
+  const btn = $("#genBtn"), msg = $("#genMsg"), slug = song.slug, t0 = Date.now();
+  btn.disabled = true;
+  msg.className = "muted";
+  msg.textContent = "Starting...";
+  try {
+    const { job } = await postJSON("/api/song/" + enc(slug) + "/transcribe", { language: $("#langSel").value });
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const j = await api("/api/job/" + job);
+      if (j.state === "error") throw new Error(j.error);
+      if (j.state === "done") break;
+      msg.textContent = (j.detail || "Working...") + "  (" + fmt((Date.now() - t0) / 1000) + ")";
+    }
+    await openSong(slug);
+  } catch (err) {
+    msg.className = "error";
+    msg.textContent = err.message;
+    btn.disabled = false;
+  }
+});
+
+/* ---------- lyrics source: online search / restore previous ---------- */
+$("#onlineBtn").addEventListener("click", async () => {
+  const btn = $("#onlineBtn"), msg = $("#srcMsg"), slug = song.slug;
+  btn.disabled = true;
+  msg.className = "muted";
+  msg.textContent = "Searching...";
+  try {
+    const list = await api("/api/song/" + enc(slug) + "/lyrics-candidates");
+    btn.disabled = false;
+    if (!list.length) { msg.textContent = "No synced lyrics were found online for this song."; return; }
+    msg.textContent = "";
+    showCandidates(slug, list);
+  } catch (err) {
+    msg.className = "error";
+    msg.textContent = err.message;
+    btn.disabled = false;
+  }
+});
+
+function showCandidates(slug, list) {
+  const box = $("#candList");
+  box.replaceChildren();
+  list.forEach((c, i) => {
+    const d = document.createElement("div");
+    d.className = "cand" + (c.likely ? "" : " other");
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = (c.artist ? c.artist + " - " : "") + c.track;
+    const m = document.createElement("div");
+    m.className = "m";
+    const bits = [];
+    if (c.duration) bits.push(fmt(c.duration));
+    if (c.diff !== null && c.diff !== undefined) bits.push(c.diff <= 3 ? "same length as your audio" : c.diff + " s different from your audio");
+    bits.push(c.likely ? (i === 0 ? "best match" : "possible match") : "probably another song");
+    m.textContent = bits.join("  -  ");
+    const p = document.createElement("div");
+    p.className = "p";
+    p.dir = "auto";
+    p.textContent = c.preview.join("  /  ");
+    const b = document.createElement("button");
+    b.className = "btn" + (c.likely && i === 0 ? " primary" : "");
+    b.type = "button";
+    b.textContent = "Use these lyrics";
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try {
+        await postJSON("/api/song/" + enc(slug) + "/use-lyrics", { id: c.id });
+        $("#lyricsDialog").close();
+        await openSong(slug);
+      } catch (err) { b.disabled = false; alert(err.message); }
+    });
+    d.append(t, m, p, b);
+    box.append(d);
+  });
+  $("#lyricsDialog").showModal();
+}
+$("#candClose").addEventListener("click", () => $("#lyricsDialog").close());
+$("#restoreBtn").addEventListener("click", async () => {
+  const slug = song.slug;
+  try {
+    await postJSON("/api/song/" + enc(slug) + "/lyrics-swap", {});
+    await openSong(slug);
+    $("#srcMsg").textContent = "Switched. Press the button again to switch back.";
+  } catch (err) {
+    $("#srcMsg").className = "error";
+    $("#srcMsg").textContent = err.message;
+  }
+});
+
+/* ---------- lyrics view ---------- */
+function renderLyrics() {
+  const box = $("#lyrics");
+  box.replaceChildren();
+  lineEls = [];
+  if (!lines.length) {
+    const d = document.createElement("div");
+    d.className = "empty";
+    d.textContent = "No synced lyrics were found for this song. Use Write lyrics in the controls to let the app write them from the singing, or paste an .lrc file.";
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.type = "button";
+    b.textContent = "Add lyrics";
+    b.addEventListener("click", openEditor);
+    d.append(document.createElement("br"), b);
+    box.append(d);
+    return;
+  }
+  lines.forEach((ln, i) => {
+    const p = document.createElement("p");
+    p.className = "line";
+    if (ln.text) {
+      const words = ln.text.split(/\s+/).filter(Boolean);
+      p._words = words.map((w, k) => {
+        const sp = document.createElement("span");
+        sp.className = "w";
+        sp.textContent = w;
+        p.append(sp);
+        if (k < words.length - 1) p.append(document.createTextNode(" "));
+        return sp;
+      });
+      p._sung = 0;
+      const rtl = ARABIC.test(ln.text);
+      p.dir = rtl ? "rtl" : "ltr";
+      if (rtl) p.classList.add("rtl");
+    } else {
+      p.textContent = "\u266A";
+      p.classList.add("gap");
+    }
+    p.addEventListener("click", () => seekTo(ln.t + offset));
+    box.append(p);
+    lineEls.push(p);
+  });
+  activeIdx = -2;
+}
+
+function updateLyrics(now) {
+  if (!lines.length) return;
+  const t = now - offset;
+  const i = findLine(lines, t);
+  if (i !== activeIdx) {
+    lineEls.forEach((el, k) => {
+      el.classList.toggle("active", k === i);
+      el.classList.toggle("past", k < i);
+      if (k !== i && el._sung) {
+        el._words.forEach((w) => w.classList.remove("sung"));
+        el._sung = 0;
+      }
+    });
+    activeIdx = i;
+    if (i >= 0) {
+      const el = lineEls[i], box = $("#lyrics");
+      box.scrollTo({
+        top: el.offsetTop - box.clientHeight / 2 + el.clientHeight / 2,
+        behavior: reduceMotion ? "auto" : "smooth",
+      });
+    }
+  }
+  if (i >= 0 && lineEls[i]._words) {
+    const ln = lines[i], el = lineEls[i];
+    const next = lines[i + 1] ? lines[i + 1].t : ln.t + 5;
+    const dur = Math.min(Math.max(next - ln.t - 0.25, 0.6), 7);
+    const p = Math.max(0, Math.min(1, (t - ln.t) / dur));
+    const n = Math.min(el._words.length, Math.ceil(p * el._words.length - 0.0001));
+    if (n !== el._sung) {
+      el._words.forEach((w, k) => w.classList.toggle("sung", k < n));
+      el._sung = n;
+    }
+  }
+}
+
+/* ---------- controls ---------- */
+$("#playBtn").addEventListener("click", togglePlay);
+$("#seek").addEventListener("input", (e) => { dragging = true; seekTo(parseFloat(e.target.value)); });
+$("#seek").addEventListener("change", () => { dragging = false; });
+function setOffsetUI() {
+  offset = Math.round(offset * 10) / 10;
+  $("#offset").value = offset;
+  $("#offsetVal").textContent = (offset > 0 ? "+" : "") + offset.toFixed(1) + "s";
+}
+function changeOffset(v) {
+  offset = Math.max(-15, Math.min(15, v));
+  setOffsetUI();
+  activeIdx = -2; // force refresh
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    if (song) postJSON("/api/song/" + encodeURIComponent(song.slug) + "/settings", { offset }).catch(() => {});
+  }, 500);
+}
+$("#offset").addEventListener("input", (e) => changeOffset(parseFloat(e.target.value)));
+$("#offsetZero").addEventListener("click", () => changeOffset(0));
+document.querySelectorAll("[data-nudge]").forEach((b) =>
+  b.addEventListener("click", () => changeOffset(offset + parseFloat(b.dataset.nudge))));
+
+$("#backBtn").addEventListener("click", () => {
+  teardown();
+  $("#player").hidden = true;
+  $("#home").hidden = false;
+  history.replaceState(null, "", location.pathname);
+  loadLibrary();
+});
+
+document.addEventListener("keydown", (e) => {
+  if ($("#player").hidden || e.target.matches("input[type=search], textarea")) return;
+  if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+  else if (e.code === "ArrowLeft") { seekTo((master() ? master().currentTime : 0) - 5); }
+  else if (e.code === "ArrowRight") { seekTo((master() ? master().currentTime : 0) + 5); }
+});
+
+/* ---------- lyrics editor ---------- */
+const dlg = $("#editDialog");
+function openEditor() {
+  $("#editText").value = song && song.lyrics ? song.lyrics : "";
+  dlg.showModal();
+}
+$("#editBtn").addEventListener("click", openEditor);
+$("#editCancel").addEventListener("click", () => dlg.close());
+$("#editSave").addEventListener("click", async () => {
+  const text = $("#editText").value;
+  try {
+    await postJSON("/api/song/" + encodeURIComponent(song.slug) + "/lyrics", { text });
+    song.lyrics = text;
+    lines = parseLRC(text);
+    renderLyrics();
+    dlg.close();
+  } catch (err) { alert(err.message); }
+});
+
+/* ---------- start ---------- */
+loadLibrary().then(() => {
+  const slug = decodeURIComponent(location.hash.slice(1));
+  if (slug) openSong(slug);
+});
+</script>
+</body>
+</html>

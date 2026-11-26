@@ -1,0 +1,11 @@
+# Installed AFTER PyTorch (torch, torchaudio and torchvision are installed separately by the launcher,
+# because each PC needs a different build of them).
+yt-dlp[default]
+demucs==4.0.1
+soundfile
+syncedlyrics
+fastapi
+uvicorn
+audio-separator[cpu]
+audioread
+faster-whisper

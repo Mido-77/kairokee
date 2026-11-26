@@ -1,0 +1,759 @@
+#!/usr/bin/env python3
+"""
+kairokee - step 1 (command line)
+
+  search  ->  download  ->  separate vocals / instrumental  ->  fetch synced lyrics
+
+Usage:
+    python kairokee.py "tamer hosny ya rab"
+    python kairokee.py "shape of you ed sheeran" --keep instrumental
+    python kairokee.py "some song" --auto          # pick the first search result
+
+Results are saved in  output/<song name>/
+"""
+import argparse
+import difflib
+import gc
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):  # so Arabic / French titles print correctly on Windows
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# Where songs and models are stored. By default: next to this file (as before).
+# The launcher sets KAIROKEE_DATA so that updating the code never touches songs or models.
+DATA = Path(os.environ.get("KAIROKEE_DATA") or Path(__file__).parent)
+OUT = DATA / "output"
+MODEL_DIR = DATA / "models"  # extra models are stored here
+if os.environ.get("KAIROKEE_DATA"):
+    # keep the separation model (demucs) inside the data folder too, not in the user's profile
+    os.environ.setdefault("TORCH_HOME", str(MODEL_DIR / "torch"))
+# Lead vs backing-vocals model. gabox_v2 keeps the main singer in the lead file from start to end;
+# the older aufr33 model kept flipping the main singing between the two files from section to section.
+KARAOKE_MODEL = "mel_band_roformer_karaoke_gabox_v2.ckpt"
+OLD_KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
+# lyrics from audio: "medium" fits a 4 GB GPU. Set KAIROKEE_WHISPER_MODEL=large-v3 for better Arabic (3 GB download)
+WHISPER_MODEL = os.environ.get("KAIROKEE_WHISPER_MODEL", "medium")
+WHISPER_LANGS = {"ar", "en", "fr"}
+MATCH_THRESHOLD = 0.75   # how much of a result's song title must match our search to count as "the same song"
+USER_AGENT = "kairokee/0.1 (personal project)"
+
+
+# --------------------------------------------------------------------------- helpers
+class KairokeeError(Exception):
+    """Something went wrong in a way we can explain to the user."""
+
+
+def die(msg):
+    raise KairokeeError(msg)
+
+
+def fmt_duration(seconds):
+    if not seconds:
+        return "?:??"
+    seconds = int(seconds)
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def slug(text):
+    """Folder name for a song. Windows does not allow a folder name to end in a space or a dot,
+    so cut to length FIRST and strip afterwards (a title cut right after a space broke downloads)."""
+    text = re.sub(r"[^\w\- ]", "", text, flags=re.UNICODE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:80].strip(" .") or "song"
+
+
+def clean_title(title):
+    """'Artist - Song (Official Video)' -> 'Artist - Song' (better for lyrics search)."""
+    title = re.sub(r"[\(\[\{].*?[\)\]\}]", " ", title)
+    title = re.sub(
+        r"(?i)\b(official|music video|lyric video|lyrics?|video|audio|clip|hd|4k)\b", " ", title
+    )
+    return re.sub(r"\s+", " ", title).strip(" -|")
+
+
+def check_tools():
+    if not shutil.which("ffmpeg"):
+        die("ffmpeg not found. Close Kairokee and run Kairokee-Repair.bat.")
+    try:
+        import yt_dlp  # noqa: F401
+    except ImportError:
+        die("yt-dlp is not installed. Run:  pip install -r requirements.txt")
+
+
+# --------------------------------------------------------------------------- 1. search
+def search_youtube(query, n):
+    import yt_dlp
+
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch{n}:{query}", download=False)
+    results = []
+    for e in info.get("entries", []):
+        if not e:
+            continue
+        results.append(
+            {
+                "id": e["id"],
+                "title": e.get("title", "?"),
+                "channel": e.get("channel") or e.get("uploader") or "?",
+                "duration": e.get("duration"),
+                "url": e.get("url") or f"https://www.youtube.com/watch?v={e['id']}",
+            }
+        )
+    return results
+
+
+def pick_result(results, auto):
+    print("\nSearch results:")
+    for i, r in enumerate(results, 1):
+        print(f"  {i}. {r['title']}  [{fmt_duration(r['duration'])}]  - {r['channel']}")
+    if auto:
+        return results[0]
+    while True:
+        choice = input("\nWhich one? (number, or Enter for 1): ").strip() or "1"
+        if choice.isdigit() and 1 <= int(choice) <= len(results):
+            return results[int(choice) - 1]
+        print("Please type a number from the list.")
+
+
+# --------------------------------------------------------------------------- 2. download
+class _YtdlpLog:
+    """Collects what yt-dlp says, prints it in the black window, and lets us show the real reason."""
+
+    def __init__(self):
+        self.lines = []
+
+    def _add(self, msg):
+        msg = str(msg)
+        self.lines.append(msg)
+        print("      yt-dlp: " + msg)
+
+    def debug(self, msg):
+        if not str(msg).startswith("[debug]"):
+            self._add(msg)
+
+    def info(self, msg):
+        self._add(msg)
+
+    def warning(self, msg):
+        self._add("WARNING: " + str(msg))
+
+    def error(self, msg):
+        self._add("ERROR: " + str(msg))
+
+    def last_problem(self):
+        for line in reversed(self.lines):
+            if line.startswith(("ERROR", "WARNING")):
+                return line
+        return ""
+
+
+def download_audio(video, folder):
+    import yt_dlp
+
+    log = _YtdlpLog()
+    opts = {
+        "format": "bestaudio/best",
+        "outtmpl": str(folder / "original.%(ext)s"),
+        "noplaylist": True,
+        "noprogress": True,
+        "logger": log,                        # everything yt-dlp says goes to the black window
+        "js_runtimes": {"deno": {}},          # YouTube needs a JavaScript runtime (Deno) to give out audio
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
+    }
+    print("\n[1/3] Downloading audio...")
+    code = None
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            code = ydl.download([video["url"]])
+    except Exception as e:
+        (folder / "download.log").write_text("\n".join(log.lines), encoding="utf-8")
+        die(f"Download failed: {log.last_problem() or type(e).__name__ + ': ' + str(e)}")
+
+    wav = folder / "original.wav"
+    if not wav.exists():
+        # the audio may have been downloaded but not converted: do the conversion ourselves
+        left = [p for p in folder.glob("original.*") if p.suffix.lower() not in (".wav", ".part", ".ytdl")]
+        if left:
+            print(f"      converting {left[0].name} to wav...")
+            try:
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(left[0]), "-vn", str(wav)],
+                               check=True)
+            except Exception as e:
+                print(f"      conversion failed: {e}")
+    if not wav.exists():
+        names = ", ".join(p.name for p in folder.iterdir()) or "nothing"
+        (folder / "download.log").write_text("\n".join(log.lines), encoding="utf-8")
+        die("Download failed: " + (log.last_problem() or
+            f"yt-dlp finished (code {code}) but made no audio file. The song folder holds: {names}."))
+    return wav
+
+
+# --------------------------------------------------------------------------- 3. separate
+def separate_vocals(wav, folder, segment=None):
+    if not segment and os.environ.get("KAIROKEE_SEGMENT"):   # set by the launcher for GPUs with little memory
+        segment = int(os.environ["KAIROKEE_SEGMENT"])
+    try:
+        import torch
+    except ImportError:
+        die("PyTorch is not installed. Close Kairokee and run Kairokee-Repair.bat.")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cpu":
+        print("[!] GPU not detected - running on CPU (slow, a few minutes per song).")
+    else:
+        print(f"      using GPU: {torch.cuda.get_device_name(0)}")
+
+    print("\n[2/3] Separating vocals from instrumental (first run downloads the model, ~80 MB)...")
+    work = folder / "demucs"
+    cmd = [
+        sys.executable, "-m", "demucs",
+        "--two-stems", "vocals",
+        "-n", "htdemucs",
+        "-d", device,
+        "-o", str(work),
+        str(wav),
+    ]
+    if segment:  # smaller chunks = less GPU memory
+        cmd.insert(-1, "--segment")
+        cmd.insert(-1, str(segment))
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError:
+        die(
+            "Separation failed - read the error printed just above. If it says 'out of memory', "
+            "close other GPU apps and try again (Kairokee-Repair.bat is not needed for this)."
+        )
+
+    stem_dir = work / "htdemucs" / wav.stem
+    vocals, instrumental = stem_dir / "vocals.wav", stem_dir / "no_vocals.wav"
+    if not (vocals.exists() and instrumental.exists()):
+        die(f"Expected stems not found in {stem_dir}")
+    return vocals, instrumental
+
+
+def to_mp3(src, dst):
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src), "-b:a", "320k", str(dst)],
+        check=True,
+    )
+
+
+# --------------------------------------------------------------------------- 4. lyrics
+ARABIC = re.compile(r"[\u0600-\u06FF]")
+
+
+def arabic_part(title):
+    """Only the Arabic words of a video title (good extra query for Arabic songs)."""
+    return " ".join(re.findall(r"[\u0600-\u06FF]+", title))
+
+
+def lrclib_candidates(query):
+    """Ask LRCLIB (free, no key). Returns the entries that have time-synced lyrics."""
+    url = "https://lrclib.net/api/search?" + urllib.parse.urlencode({"q": query})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        results = json.load(resp)
+    return [r for r in results if r.get("syncedLyrics")]
+
+
+AR_MARKS = re.compile(r"[\u064B-\u065F\u0670\u0640]")   # Arabic diacritics and the tatweel stretch
+AR_FOLD = str.maketrans({"\u0623": "\u0627", "\u0625": "\u0627", "\u0622": "\u0627",
+                         "\u0649": "\u064A", "\u0629": "\u0647"})
+
+
+def _tokens(text):
+    """Lower-case words, with Arabic spelling variants folded together (diacritics, alef forms...)."""
+    text = AR_MARKS.sub("", text.lower().replace("'", "").replace("\u2019", "")).translate(AR_FOLD)
+    return re.findall(r"\w+", text)
+
+
+def relevance(candidate, query_tokens):
+    """Share of the entry's SONG TITLE words that also appear in our search words (0..1).
+    The artist's own name is ignored, otherwise another song by the same artist would match."""
+    words = _tokens(clean_title(candidate.get("trackName") or ""))
+    artist = set(_tokens(candidate.get("artistName") or ""))
+    core = [w for w in words if w not in artist] or words
+    if not core:
+        return 0.0
+    hits = sum(
+        1 for w in core
+        if any(w == q or difflib.SequenceMatcher(None, w, q).ratio() >= 0.8 for q in query_tokens)
+    )
+    return hits / len(core)
+
+
+def build_queries(query, title):
+    """Search words: what you typed, the whole video title, its Arabic part, and each title segment
+    on its own (so 'SHOFT KALAM' is searched without the artists' names drowning it out)."""
+    segments = [clean_title(x) for x in re.split(r"\s[-\u2013\u2014]\s|\s?\|\s?", title or "")]
+    queries = []
+    for q in [query, clean_title(title or ""), arabic_part(title or "")] + segments:
+        q = AR_MARKS.sub("", q or "").strip()
+        if len(q) >= 3 and q not in queries:
+            queries.append(q)
+    return queries[:8]
+
+
+def gather_candidates(queries):
+    """All LRCLIB entries with synced lyrics for our search words (duplicates removed)."""
+    pool, seen = [], set()
+    for q in queries:
+        try:
+            for c in lrclib_candidates(q):
+                if c.get("id") not in seen:
+                    seen.add(c.get("id"))
+                    pool.append(c)
+        except Exception as e:  # network hiccup, API change...
+            print(f"      LRCLIB error for '{q}': {e}")
+    return pool
+
+
+def rank_candidates(pool, queries, duration):
+    """Best first. Returns [(other_song, latin_only, length_diff, entry, relevance)]."""
+    query_tokens = set(t for q in queries for t in _tokens(q))
+    wants_arabic = any(ARABIC.search(q) for q in queries)
+    ranked = []
+    for c in pool:
+        rel = relevance(c, query_tokens)
+        latin_only = wants_arabic and not ARABIC.search(c["syncedLyrics"])
+        diff = abs((c.get("duration") or 0) - duration) if duration else 0
+        ranked.append((rel < MATCH_THRESHOLD, latin_only, diff, c, rel))
+    ranked.sort(key=lambda x: x[:3])
+    return ranked
+
+
+def choose_best(pool, queries, duration):
+    """Keep only entries that really are this song, then prefer Arabic script, then closest length."""
+    ranked = rank_candidates(pool, queries, duration)
+    if not ranked or ranked[0][0]:        # nothing matches the song title
+        return None
+    _, latin_only, diff, best, _ = ranked[0]
+    label = f"LRCLIB: {best.get('artistName', '?')} - {best.get('trackName', '?')}"
+    if duration and diff > 8:
+        label += f"  (length differs by {int(diff)}s - sync may be off)"
+    if latin_only:
+        label += "  (Latin letters only - no Arabic-script version found)"
+    return best["syncedLyrics"], label
+
+
+def fetch_lyrics(queries, duration):
+    print("\n[3/3] Looking for synced lyrics online...")
+    pool = gather_candidates(queries)
+    if pool:
+        print(f"      {len(pool)} candidate(s) with synced lyrics")
+        best = choose_best(pool, queries, duration)
+        if best:
+            return best
+        print("      none of them matches the song title - ignoring them")
+    # Other providers (syncedlyrics) give no song info we could check, so they often return the wrong
+    # song. They are only used if you ask for it: set KAIROKEE_EXTRA_LYRICS=1
+    if os.environ.get("KAIROKEE_EXTRA_LYRICS") == "1":
+        try:
+            import syncedlyrics
+
+            for q in queries:
+                lrc = syncedlyrics.search(q, synced_only=True)
+                if lrc:
+                    return lrc, "syncedlyrics (other providers, not verified)"
+        except Exception as e:
+            print(f"      syncedlyrics error: {e}")
+    return None
+
+
+def find_online_lyrics(folder, meta):
+    """Search the online sources again for a song that already exists. Returns (lrc, source) or None."""
+    title = meta.get("title") or folder.name
+    return fetch_lyrics(build_queries(meta.get("query"), title), meta.get("video_duration"))
+
+
+# --------------------------------------------------------------------------- lyrics from audio (Whisper)
+def guess_language(*texts):
+    """'ar' if any text has Arabic letters, else None (Whisper then detects the language itself)."""
+    return "ar" if any(t and ARABIC.search(t) for t in texts) else None
+
+
+def _add_torch_dlls():
+    """On Windows, reuse the CUDA libraries that PyTorch already ships (no CUDA install needed)."""
+    if os.name != "nt":
+        return
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("torch")
+        if spec and spec.submodule_search_locations:
+            lib = Path(list(spec.submodule_search_locations)[0]) / "lib"
+            if lib.exists():
+                os.add_dll_directory(str(lib))
+                os.environ["PATH"] = str(lib) + os.pathsep + os.environ.get("PATH", "")
+    except Exception:
+        pass
+
+
+def whisper_worker(args):
+    """Runs in its own process (a crash here cannot take the server down).
+    args: audio_path out_json language device"""
+    audio, out_json, language, device = args[:4]
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")  # harmless Windows warning
+    _add_torch_dlls()
+    from faster_whisper import WhisperModel
+
+    compute = "int8_float16" if device == "cuda" else "int8"
+    model = WhisperModel(
+        WHISPER_MODEL, device=device, compute_type=compute,
+        cpu_threads=max(4, (os.cpu_count() or 8) // 2),
+        download_root=str(MODEL_DIR / "whisper"),
+    )
+    segments, info = model.transcribe(
+        audio, language=language or None, beam_size=5, word_timestamps=True,
+        vad_filter=True, vad_parameters={"min_silence_duration_ms": 500},
+        condition_on_previous_text=False,
+    )
+    words = []
+    for seg in segments:
+        if seg.no_speech_prob > 0.85 and seg.avg_logprob < -1.0:
+            continue  # almost certainly a hallucination over silence
+        for w in seg.words or []:
+            text = w.word.strip()
+            if text:
+                words.append({"w": text, "s": round(w.start, 2), "e": round(w.end, 2)})
+    Path(out_json).write_text(
+        json.dumps({"language": info.language, "words": words}, ensure_ascii=False), encoding="utf-8")
+
+
+def words_to_lines(words, max_words=9, max_gap=0.8):
+    """Group timed words into lyric lines: break at pauses, long lines and sentence ends."""
+    lines, cur = [], []
+    for w in words:
+        if cur and (w["s"] - cur[-1]["e"] > max_gap or len(cur) >= max_words):
+            lines.append(cur)
+            cur = []
+        cur.append(w)
+        if re.search(r"[.!?\u061F\u2026]$", w["w"]) and len(cur) >= 3:
+            lines.append(cur)
+            cur = []
+    if cur:
+        lines.append(cur)
+    return [(ln[0]["s"], " ".join(x["w"] for x in ln)) for ln in lines]
+
+
+def lines_to_lrc(lines):
+    out = []
+    for t, text in lines:
+        m, sec = int(t // 60), t - 60 * int(t // 60)
+        out.append(f"[{m:02d}:{sec:05.2f}] {text}")
+    return "\n".join(out) + "\n"
+
+
+def transcribe_to_lrc(audio, language=None, say=lambda msg: None):
+    """Listen to a (vocals) audio file and write time-synced lyrics. Returns (lrc_text, language)."""
+    import importlib.util
+
+    if importlib.util.find_spec("faster_whisper") is None:
+        die("Writing lyrics from audio is not installed. Run:  pip install -r requirements-whisper.txt")
+    audio = Path(audio)
+    cache = MODEL_DIR / "whisper"
+    first_time = not (cache.exists() and any(cache.glob(f"*faster-whisper-{WHISPER_MODEL}*")))
+    out = audio.parent / "whisper_words.json"
+    out.unlink(missing_ok=True)
+
+    import time
+
+    started = time.time()
+    used = None
+    for device in ("cuda", "cpu"):
+        if device == "cuda":
+            size = {"small": "0.5 GB", "medium": "1.5 GB", "large-v3": "3 GB"}.get(WHISPER_MODEL, "over 1 GB")
+            say(f"First time only: downloading the lyrics model (about {size}). This can take 10 minutes or more."
+                if first_time else "")   # otherwise the page shows the expected time for this computer
+        else:
+            say("The graphics card could not be used for this step, so it is using the CPU. "
+                "This is slower. The app is working, it is not frozen.")
+        cmd = [sys.executable, str(Path(__file__).resolve()), "--whisper-worker",
+               str(audio), str(out), language or "", device]
+        result = subprocess.run(cmd)
+        if result.returncode == 0 and out.exists():
+            used = device
+            break
+    else:
+        die("Could not write the lyrics from the audio. Read the error printed in the terminal.")
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+    out.unlink(missing_ok=True)
+    lines = words_to_lines(data["words"])
+    print(f"      lyrics written on the {'GPU' if used == 'cuda' else 'CPU'} in "
+          f"{int(time.time() - started)} s: {len(lines)} lines, language: {data.get('language')}")
+    if not lines:
+        die("No singing was detected in the audio, so no lyrics could be written.")
+    return lines_to_lrc(lines), data.get("language")
+
+
+def write_lyrics_from_audio(folder, language=None, say=lambda msg: None, fallback_audio=None):
+    """Transcribe lead.mp3 (or vocals.mp3) into folder/lyrics.lrc. Returns the source label."""
+    src = next((f for f in (folder / "lead.mp3", folder / "vocals.mp3") if f.exists()), fallback_audio)
+    if not src:
+        die("This song has no vocals track to write lyrics from.")
+    lrc, lang = transcribe_to_lrc(src, language, say)
+    (folder / "lyrics.lrc").write_text(lrc, encoding="utf-8")
+    return f"Written by the app from the audio (Whisper {WHISPER_MODEL}, language: {lang})"
+
+
+# --------------------------------------------------------------------------- lead vs backing vocals
+def _rms(path):
+    import numpy as np
+    import soundfile as sf
+
+    data, _ = sf.read(str(path), dtype="float32")
+    return float(np.sqrt((data ** 2).mean())) if data.size else 0.0
+
+
+def split_vocals(vocals_path, folder, say=lambda msg: None):
+    """Split a vocals track into lead vocals and backing vocals / ad-libs.
+    Returns (lead_wav, backing_wav). Needs the extra packages in requirements-adlibs.txt."""
+    try:
+        from audio_separator.separator import Separator
+    except ImportError:
+        die("The ad-lib splitter is not installed. Run:  pip install -r requirements-adlibs.txt")
+    import logging
+
+    work = folder / "split"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    MODEL_DIR.mkdir(exist_ok=True)
+    model = os.environ.get("KAIROKEE_KARAOKE_MODEL") or KARAOKE_MODEL
+    precision = (os.environ.get("KAIROKEE_SPLIT_PRECISION") or "fp32").lower()   # fp32 | autocast | fp16
+    extra = {}
+    if precision == "autocast":
+        extra["use_autocast"] = True
+    elif precision == "fp16":
+        extra["use_native_fp16"] = True
+    first_time = not (MODEL_DIR / model).exists()
+    if first_time:
+        say("Downloading the ad-lib model (first time only, about 900 MB). This can take 10 minutes or more.")
+        print("      downloading the ad-lib model (first time only, ~900 MB)...")
+    else:
+        say("Loading the ad-lib model...")
+
+    sep = Separator(output_dir=str(work), output_format="WAV",
+                    model_file_dir=str(MODEL_DIR), log_level=logging.WARNING, **extra)
+    sep.load_model(model_filename=model)
+    print(f"      ad-lib splitter: model {model}, device {getattr(sep, 'torch_device', '?')}, precision {precision}")
+    say("")   # the page shows the expected time for this computer
+    print("      splitting lead vocals from backing vocals...")
+    sep.separate(str(vocals_path))
+    del sep
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+    files = list(work.glob("*.wav"))
+    lead = next((f for f in files if any(k in f.name.lower() for k in ("(vocals)", "(karaoke)", "(lead)"))), None)
+    back = next((f for f in files if f != lead and any(
+        k in f.name.lower() for k in ("(instrumental)", "(other)", "(backing)"))), None)
+    if lead and not back:
+        back = next((f for f in files if f != lead), None)    # two files: the one that is not the lead
+    if not (lead and back):
+        die("Unexpected files from the ad-lib splitter: " + ", ".join(f.name for f in files))
+    # safety net: the lead voice is normally the louder of the two
+    if _rms(lead) < 0.5 * _rms(back):
+        lead, back = back, lead
+    return lead, back
+
+
+def split_into_mp3s(vocals_path, folder, say=lambda msg: None):
+    """Run split_vocals and save lead.mp3 / backing.mp3 next to the other tracks."""
+    lead, back = split_vocals(vocals_path, folder, say)
+    to_mp3(lead, folder / "lead.mp3")
+    to_mp3(back, folder / "backing.mp3")
+    shutil.rmtree(folder / "split", ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- cover art
+def _download(url, dest, min_bytes=2000):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = resp.read()
+    if len(data) < min_bytes:
+        return False
+    dest.write_bytes(data)
+    return True
+
+
+def itunes_cover_url(queries, duration):
+    """Album art from the free iTunes Search API (no key). Only accepts entries matching the title."""
+    query_tokens = set(t for q in queries for t in _tokens(q))
+    pool = []
+    for q in queries:
+        url = "https://itunes.apple.com/search?" + urllib.parse.urlencode(
+            {"term": q, "media": "music", "entity": "song", "limit": 10})
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            pool += json.load(resp).get("results", [])
+    pool = [c for c in pool if c.get("artworkUrl100") and relevance(c, query_tokens) >= MATCH_THRESHOLD]
+    if not pool:
+        return None
+    if duration:
+        pool.sort(key=lambda c: abs((c.get("trackTimeMillis") or 0) / 1000 - duration))
+    return pool[0]["artworkUrl100"].replace("100x100bb", "600x600bb")
+
+
+def fetch_cover(folder, queries, duration=None, video_id=None):
+    """Save folder/cover.jpg. Returns "itunes", "youtube" or None."""
+    dest = folder / "cover.jpg"
+    try:
+        url = itunes_cover_url(queries, duration)
+        if url and _download(url, dest):
+            return "itunes"
+    except Exception as e:
+        print(f"      cover (iTunes) error: {e}")
+    if video_id:
+        for name in ("maxresdefault", "mqdefault"):
+            try:
+                if _download(f"https://i.ytimg.com/vi/{video_id}/{name}.jpg", dest, 3000):
+                    return "youtube"
+            except Exception:
+                continue
+    return None
+
+
+# --------------------------------------------------------------------------- pipeline
+def run_pipeline(video, query, keep="both", keep_temp=False, segment=None,
+                 stage=lambda name: None, choose_keep=None, split=True,
+                 detail=lambda msg: None, transcribe=True):
+    """download -> separate -> encode -> lyrics. Used by both the CLI and the web server."""
+    folder = OUT / slug(video["title"])
+    folder.mkdir(parents=True, exist_ok=True)
+
+    stage("download")
+    wav = download_audio(video, folder)
+
+    stage("separate")
+    vocals, instrumental = separate_vocals(wav, folder, segment)
+
+    if keep is None and choose_keep:
+        keep = choose_keep()
+    keep = keep or "both"
+
+    stage("encode")
+    if keep in ("instrumental", "both"):
+        to_mp3(instrumental, folder / "instrumental.mp3")
+    if keep in ("vocals", "both"):
+        to_mp3(vocals, folder / "vocals.mp3")
+
+    split_ok = False
+    if split and keep in ("vocals", "both"):
+        stage("split")
+        try:
+            split_into_mp3s(vocals, folder, detail)
+            split_ok = True
+        except Exception as e:  # not fatal: the song still works without the ad-lib split
+            print(f"\n[!] Could not split the ad-libs: {e}\n")
+
+    stage("lyrics")
+    queries = build_queries(query, video["title"])
+    found = fetch_lyrics(queries, video["duration"])
+    source = None
+    if found:
+        lrc, source = found
+        (folder / "lyrics.lrc").write_text(lrc, encoding="utf-8")
+        print(f"      found -> {source}")
+    else:
+        print("      no synced lyrics found online.")
+
+    cover = fetch_cover(folder, queries, video.get("duration"), video.get("id"))
+    print(f"      cover art: {cover or 'not found'}")
+
+    # no synced lyrics online: write them from the singing itself
+    if not found and transcribe:
+        stage("transcribe")
+        try:
+            source = write_lyrics_from_audio(folder, guess_language(query, video["title"]),
+                                             detail, fallback_audio=vocals)
+            print(f"      lyrics: {source}")
+        except Exception as e:  # not fatal: the song works without lyrics
+            print(f"\n[!] Could not write lyrics from the audio: {e}\n")
+
+    # keep the timing offset the user already saved for this song, if any
+    meta_path = folder / "meta.json"
+    old = {}
+    if meta_path.exists():
+        try:
+            old = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    meta = {
+        "title": video["title"],
+        "query": query,
+        "id": video.get("id"),
+        "url": video.get("url"),
+        "video_duration": video.get("duration"),
+        "lyrics_source": source,
+        "cover": cover,
+        "split": split_ok,
+        "offset": old.get("offset", 0.0),
+    }
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if not keep_temp:
+        wav.unlink(missing_ok=True)
+        shutil.rmtree(folder / "demucs", ignore_errors=True)
+    return folder, meta
+
+
+# --------------------------------------------------------------------------- command line
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--whisper-worker":
+        whisper_worker(sys.argv[2:])
+        return
+    ap = argparse.ArgumentParser(description="kairokee step 1: search, download, separate, lyrics")
+    ap.add_argument("query", nargs="+", help="song name (and artist)")
+    ap.add_argument("--results", type=int, default=5, help="how many search results to show")
+    ap.add_argument("--auto", action="store_true", help="use the first search result")
+    ap.add_argument("--keep", choices=["instrumental", "vocals", "both"],
+                    help="what to keep (asked interactively if omitted)")
+    ap.add_argument("--segment", type=int, help="demucs chunk size in seconds (try 4 if the GPU runs out of memory)")
+    ap.add_argument("--keep-temp", action="store_true", help="keep original.wav and demucs/ folder")
+    args = ap.parse_args()
+
+    def ask_keep():
+        print("\nWhat do you want to keep?")
+        print("  1. Instrumental only (karaoke)")
+        print("  2. Vocals only (acapella)")
+        print("  3. Both")
+        return {"1": "instrumental", "2": "vocals", "3": "both"}.get(
+            input("Choice (1/2/3, Enter for 1): ").strip() or "1", "instrumental"
+        )
+
+    query = " ".join(args.query)
+    try:
+        check_tools()
+        print(f"Searching for: {query}")
+        results = search_youtube(query, args.results)
+        if not results:
+            die("No results found.")
+        video = pick_result(results, args.auto)
+        folder, _ = run_pipeline(video, query, keep=args.keep, keep_temp=args.keep_temp,
+                                 segment=args.segment, choose_keep=ask_keep)
+    except KairokeeError as e:
+        print(f"\n[!] {e}")
+        sys.exit(1)
+
+    print(f"\nDone! Files are in:\n  {folder}")
+    for f in sorted(folder.iterdir()):
+        print(f"   - {f.name}")
+
+
+if __name__ == "__main__":
+    main()
