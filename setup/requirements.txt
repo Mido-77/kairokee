@@ -9,3 +9,5 @@ uvicorn
 audio-separator[cpu]
 audioread
 faster-whisper
+# Mac with Apple Silicon only: writes lyrics on the Mac's graphics (much faster than on the CPU)
+mlx-whisper; sys_platform == "darwin" and platform_machine == "arm64"

@@ -621,6 +621,8 @@ def whisper_worker(args):
     args: audio_path out_json language device"""
     audio, out_json, language, device = args[:4]
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")  # harmless Windows warning
+    if device == "mlx":
+        return mlx_whisper_worker(audio, out_json, language)
     _add_torch_dlls()
     from faster_whisper import WhisperModel
 
@@ -645,6 +647,37 @@ def whisper_worker(args):
                 words.append({"w": text, "s": round(w.start, 2), "e": round(w.end, 2)})
     Path(out_json).write_text(
         json.dumps({"language": info.language, "words": words}, ensure_ascii=False), encoding="utf-8")
+
+
+# Whisper models made for Apple Silicon graphics (mlx-whisper), same sizes as the normal ones
+MLX_REPOS = {"small": "mlx-community/whisper-small-mlx", "medium": "mlx-community/whisper-medium-mlx",
+             "large-v3": "mlx-community/whisper-large-v3-mlx", "large-v3-turbo": "mlx-community/whisper-large-v3-turbo"}
+
+
+def mlx_available():
+    import importlib.util
+
+    return IS_MAC and importlib.util.find_spec("mlx_whisper") is not None
+
+
+def mlx_whisper_worker(audio, out_json, language):
+    """Mac with Apple Silicon: Whisper on the Mac's graphics (several times faster than on the CPU)."""
+    os.environ.setdefault("HF_HUB_CACHE", str(MODEL_DIR / "whisper-mlx"))   # keep the model with the others
+    import mlx_whisper
+
+    result = mlx_whisper.transcribe(
+        str(audio), path_or_hf_repo=MLX_REPOS.get(WHISPER_MODEL, MLX_REPOS["medium"]),
+        language=language or None, word_timestamps=True, condition_on_previous_text=False, verbose=None)
+    words = []
+    for seg in result.get("segments", []):
+        if seg.get("no_speech_prob", 0) > 0.85 and seg.get("avg_logprob", 0) < -1.0:
+            continue  # almost certainly a hallucination over silence
+        for w in seg.get("words") or []:
+            text = str(w.get("word", "")).strip()
+            if text:
+                words.append({"w": text, "s": round(float(w["start"]), 2), "e": round(float(w["end"]), 2)})
+    Path(out_json).write_text(
+        json.dumps({"language": result.get("language"), "words": words}, ensure_ascii=False), encoding="utf-8")
 
 
 def words_to_lines(words, max_words=9, max_gap=0.8):
@@ -691,6 +724,9 @@ def transcribe_to_lrc(audio, language=None, say=lambda msg: None):
     audio = Path(audio)
     cache = MODEL_DIR / "whisper"
     first_time = not (cache.exists() and any(cache.glob(f"*faster-whisper-{WHISPER_MODEL}*")))
+    if IS_MAC and mlx_available():
+        mlx_cache = MODEL_DIR / "whisper-mlx"
+        first_time = not (mlx_cache.exists() and any(mlx_cache.glob(f"*whisper-{WHISPER_MODEL}*")))
     out = audio.parent / "whisper_words.json"
     out.unlink(missing_ok=True)
 
@@ -698,8 +734,10 @@ def transcribe_to_lrc(audio, language=None, say=lambda msg: None):
 
     started = time.time()
     used = None
-    # faster-whisper can use NVIDIA cards but not Apple graphics (on a Mac it runs on the fast Apple CPU)
-    devices = ["cuda", "cpu"] if compute_device() == "cuda" else ["cpu"]
+    # NVIDIA card: faster-whisper on the card. Mac: mlx-whisper on the Apple graphics. Else (or if that
+    # fails): faster-whisper on the processor.
+    dev = compute_device()
+    devices = ["cuda", "cpu"] if dev == "cuda" else ["mlx", "cpu"] if dev == "mps" and mlx_available() else ["cpu"]
     for device in devices:
         if device == devices[0]:
             size = {"small": "0.5 GB", "medium": "1.5 GB", "large-v3": "3 GB"}.get(WHISPER_MODEL, "over 1 GB")
@@ -718,7 +756,7 @@ def transcribe_to_lrc(audio, language=None, say=lambda msg: None):
     data = json.loads(out.read_text(encoding="utf-8"))
     out.unlink(missing_ok=True)
     lines = words_to_lines(data["words"])
-    print(f"      lyrics written on the {'GPU' if used == 'cuda' else 'CPU'} in "
+    print(f"      lyrics written on the {DEVICE_NAMES.get('mps' if used == 'mlx' else used, used)} in "
           f"{int(time.time() - started)} s: {len(lines)} lines, language: {data.get('language')}")
     if not lines:
         die("No singing was detected in the audio, so no lyrics could be written.")

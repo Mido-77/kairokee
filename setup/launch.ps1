@@ -371,8 +371,32 @@ function Invoke-Setup {
             CudaBuild = $gpu.Build
             LastYtdlpCheck = (Get-Date).ToString('o')
         })
+    Set-Shortcut $true
     Write-Host ''
     Write-Host 'Setup finished. You will not see this part again.' -ForegroundColor Green
+}
+
+# ----------------------------------------------------------------------------- desktop shortcut
+function Set-Shortcut([bool]$create) {
+    # A "Kairokee" icon on the desktop. Made once at setup; afterwards only kept pointing at this folder
+    # (if you moved the folder). If you delete the shortcut, it is not made again (Repair makes it again).
+    try {
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        if (-not $desktop) { return }
+        $lnk = Join-Path $desktop 'Kairokee.lnk'
+        $target = Join-Path $Root 'Kairokee.bat'
+        if ((-not $create) -and (-not (Test-Path $lnk))) { return }
+        $shell = New-Object -ComObject WScript.Shell
+        $s = $shell.CreateShortcut($lnk)
+        if ((-not $create) -and ($s.TargetPath -eq $target)) { return }
+        $s.TargetPath = $target
+        $s.WorkingDirectory = $Root
+        $s.IconLocation = (Join-Path $AppDir 'static\icon.ico') + ',0'
+        $s.Description = 'Kairokee - karaoke from any song'
+        $s.Save()
+        if ($create) { Write-Ok 'Kairokee icon added to the desktop' }
+    }
+    catch { }
 }
 
 # ----------------------------------------------------------------------------- start the app
@@ -556,6 +580,7 @@ try {
         $state = Update-YtDlp $state
     }
     Confirm-YouTubeHelpers
+    Set-Shortcut $false
     if ($SetupOnly) { Write-Host 'Setup only: everything is installed. Not starting Kairokee.' -ForegroundColor Green }
     else { Start-Kairokee $state }
 }

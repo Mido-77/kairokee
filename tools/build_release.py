@@ -21,6 +21,8 @@ SHARED = [
     "app/kairokee.py",
     "app/server.py",
     "app/static/index.html",
+    "app/static/icon.png",
+    "app/static/icon.ico",
     "setup/requirements.txt",
     "setup/constraints.txt",
     "setup/selftest.py",
@@ -43,8 +45,13 @@ MAC = SHARED + [
 EXECUTABLE = (".command", ".sh")
 
 
+BINARY = (".png", ".ico")
+
+
 def file_bytes(src, crlf):
     data = (ROOT / src).read_bytes()
+    if src.endswith(BINARY):
+        return data            # pictures are copied as they are
     data = data.replace(b"\r\n", b"\n")
     if crlf:
         data = data.replace(b"\n", b"\r\n")

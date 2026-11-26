@@ -692,6 +692,12 @@ def api_transcribe(slug: str, body: TranscribeBody):
 INDEX = next((p for p in (ROOT / "static" / "index.html", ROOT / "index.html") if p.exists()), None)
 
 
+@app.get("/icon.png")
+@app.get("/favicon.ico")
+def icon():
+    return FileResponse(ROOT / "static" / "icon.png", headers={"Cache-Control": "max-age=86400"})
+
+
 @app.get("/")
 def home():
     if INDEX is None:
