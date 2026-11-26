@@ -1,10 +1,10 @@
 """
-Build the two download files:
+Build the two download files, next to this source folder:
 
-    dist/Kairokee-Windows.zip
-    dist/Kairokee-Mac.zip
+    ../Kairokee-Windows.zip
+    ../Kairokee-Mac.zip
 
-Run from anywhere:   python tools/build_release.py
+Run from anywhere:   python tools/build_release.py   (it replaces the old zips)
 
 Why a script: a ZIP made by Windows' "Send to > Compressed folder" loses the "executable" mark
 that macOS needs to double-click a .command file, and may give the Mac scripts Windows line endings
@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DIST = ROOT / "dist"
+DIST = ROOT.parent   # the zips go next to the source folder, not inside it
 
 SHARED = [
     "app/kairokee.py",
