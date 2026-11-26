@@ -8,6 +8,10 @@ Usage (PowerShell, from the Kairokee folder):
     $kh = "$env:LOCALAPPDATA\\Kairokee"
     & "$kh\\venv\\Scripts\\python.exe" tools\\bench_split.py "$kh\\data\\output\\<song folder>"
 
+Usage (Mac Terminal, from the Kairokee folder):
+    kh="$HOME/Library/Application Support/Kairokee"
+    "$kh/venv/bin/python" tools/bench_split.py "$kh/data/output/<song folder>"
+
 Options:
     --seconds 30                 length of the test clip
     --start 40                   where the clip starts (seconds)
@@ -35,7 +39,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "app"))
 
 if not os.environ.get("KAIROKEE_DATA"):
-    base = os.environ.get("KAIROKEE_HOME") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "Kairokee")
+    if sys.platform == "darwin":
+        default_home = os.path.expanduser("~/Library/Application Support/Kairokee")
+    else:
+        default_home = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Kairokee")
+    base = os.environ.get("KAIROKEE_HOME") or default_home
     os.environ["KAIROKEE_DATA"] = os.path.join(base, "data")
 for extra in ("ffmpeg", "deno"):
     p = Path(os.environ["KAIROKEE_DATA"]).parent / extra

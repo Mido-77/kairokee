@@ -10,24 +10,35 @@ $ProgressPreference = 'SilentlyContinue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
 # ----------------------------------------------------------------------------- settings
-$SetupVersion = 1            # raise this when a new app version needs a fresh setup
-$Port = 8000
-$TorchVersion = '2.5.1'
-$TorchVisionVersion = '0.20.1'
-$CudaIndex = 'https://download.pytorch.org/whl/cu121'
+$SetupVersion = 2            # raise this when a new app version needs a fresh setup (2: PyTorch 2.14)
+$FirstPort = 8000            # if it is taken, the next free one up to $LastPort is used
+$LastPort = 8010
+$TorchVersion = '2.14.1'
+$TorchAudioVersion = '2.11.0'  # torchaudio stopped at 2.11; it works with newer PyTorch
+$TorchVisionVersion = '0.29.1'
+# Which PyTorch build for which NVIDIA card:
+#  cu126 - every card from the GTX 900 series up to the RTX 40 series, NVIDIA driver 528 or newer
+#  cu130 - RTX 50 series (Blackwell) and newer, NVIDIA driver 580 or newer
+$CudaBuilds = @{
+    cu126 = @{ Index = 'https://download.pytorch.org/whl/cu126'; MinDriver = 528 }
+    cu130 = @{ Index = 'https://download.pytorch.org/whl/cu130'; MinDriver = 580 }
+}
 $CpuIndex = 'https://download.pytorch.org/whl/cpu'
-$MinDriver = 527             # NVIDIA driver needed for CUDA 12.1
-$MinCompute = 5.0            # oldest GPU generation the CUDA 12.1 build supports (Maxwell)
-$MaxCompute = 9.99           # newer cards (RTX 50 series) need a newer PyTorch: not tested yet
+$MinCompute = 5.0            # oldest card generation PyTorch still supports (Maxwell, GTX 900)
+$BlackwellCompute = 10.0     # from here on (RTX 50) the cu130 build is needed
 $MinFreeGB = 12
 $MinRamGB = 6
-$UvUrl = 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip'
+# Fixed versions with checksums: a broken or changed upstream release cannot break new installs.
+$UvUrl = 'https://github.com/astral-sh/uv/releases/download/0.13.9/uv-x86_64-pc-windows-msvc.zip'
+$UvSha = 'edd61f7f5728a56cc62455386661860bdfc7bab65872f39b0c25bdcc1d8e1beb'
 $FfmpegUrls = @(
-    'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
-    'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+    'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.1-essentials_build.zip',
+    'https://github.com/GyanD/codexffmpeg/releases/download/9.1/ffmpeg-9.1-essentials_build.zip'
 )
+$FfmpegSha = 'b9bbbb3acece000cbeec994f856649354e52c773807841e78908374b24d658fd'
 $VcRedistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
-$DenoUrl = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip'
+$DenoUrl = 'https://github.com/denoland/deno/releases/download/v2.9.8/deno-x86_64-pc-windows-msvc.zip'
+$DenoSha = 'cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf'
 
 $SetupDir = $PSScriptRoot
 $Root = Split-Path -Parent $SetupDir
@@ -76,10 +87,17 @@ function Invoke-Native {
     throw "$What failed. Scroll up to read the error. A weak internet connection is the usual cause: just open Kairokee again and it will continue."
 }
 
-function Get-File([string]$Url, [string]$Dest) {
+function Get-File([string]$Url, [string]$Dest, [string]$Sha256 = '') {
     $part = "$Dest.part"
     if (Test-Path $part) { Remove-Item -Force $part }
     Invoke-WebRequest -Uri $Url -OutFile $part -UseBasicParsing
+    if ($Sha256) {
+        $got = (Get-FileHash -Algorithm SHA256 $part).Hash.ToLowerInvariant()
+        if ($got -ne $Sha256.ToLowerInvariant()) {
+            Remove-Item -Force $part -ErrorAction SilentlyContinue
+            throw "The download from $(([uri]$Url).Host) was damaged or changed (checksum does not match). Open Kairokee again to retry."
+        }
+    }
     Move-Item -Force $part $Dest
 }
 
@@ -112,7 +130,7 @@ function Get-Whisper([string]$device, [int]$vram) {
 
 # ----------------------------------------------------------------------------- graphics card
 function Get-GpuPlan {
-    $plan = @{ Device = 'cpu'; Name = ''; VramMB = 0; Driver = ''; Reason = ''; Compute = 0.0 }
+    $plan = @{ Device = 'cpu'; Name = ''; VramMB = 0; Driver = ''; Reason = ''; Compute = 0.0; Build = '' }
     $smi = $null
     $found = Get-Command nvidia-smi -ErrorAction SilentlyContinue
     if ($found) { $smi = $found.Source }
@@ -159,18 +177,18 @@ function Get-GpuPlan {
 
     if ($cc -ne $null) { $plan.Compute = $cc }
 
-    if ($driverMajor -lt $MinDriver) {
-        $plan.Reason = "The NVIDIA driver is old (version $($best[1])). Update it from nvidia.com/drivers, then run Kairokee-Repair.bat to use the graphics card."
-        return $plan
-    }
     if (($cc -ne $null) -and ($cc -lt $MinCompute)) {
         $plan.Reason = "The graphics card ($($plan.Name)) is too old for GPU mode."
         return $plan
     }
-    if (($cc -ne $null) -and ($cc -gt $MaxCompute)) {
-        $plan.Reason = "The graphics card ($($plan.Name)) is very new and this version of Kairokee has not been tested with it yet."
+    $build = 'cu126'
+    if (($cc -ne $null) -and ($cc -ge $BlackwellCompute)) { $build = 'cu130' }
+    $need = $CudaBuilds[$build].MinDriver
+    if ($driverMajor -lt $need) {
+        $plan.Reason = "The NVIDIA driver is too old for this card (version $($best[1]); version $need or newer is needed). Update it from nvidia.com/drivers, then open Kairokee-Repair.bat to use the graphics card."
         return $plan
     }
+    $plan.Build = $build
     if ($bestMem -lt 2000) {
         $plan.Reason = "The graphics card ($($plan.Name)) has too little memory ($bestMem MB) for GPU mode."
         return $plan
@@ -180,11 +198,11 @@ function Get-GpuPlan {
 }
 
 # ----------------------------------------------------------------------------- setup (first run)
-function Install-Torch([string]$device, [bool]$swapOnly = $false) {
-    if ($device -eq 'cuda') { $index = $CudaIndex } else { $index = $CpuIndex }
+function Install-Torch([string]$device, [string]$build = '', [bool]$swapOnly = $false) {
+    if ($device -eq 'cuda') { $index = $CudaBuilds[$build].Index } else { $index = $CpuIndex }
     $a = @('pip', 'install', '--python', $VenvPy, '--reinstall')
     if ($swapOnly) { $a += '--no-deps' }
-    $a += @("torch==$TorchVersion", "torchaudio==$TorchVersion", "torchvision==$TorchVisionVersion", '--index-url', $index)
+    $a += @("torch==$TorchVersion", "torchaudio==$TorchAudioVersion", "torchvision==$TorchVisionVersion", '--index-url', $index)
     Invoke-Native $Uv $a 'Installing PyTorch (the biggest download)' 3
 }
 
@@ -211,9 +229,12 @@ function Invoke-Setup {
     $total = 7
 
     Write-Title "[1/$total] Checking this PC"
-    if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { throw 'This version of Kairokee needs a normal 64-bit Windows PC (not Windows on ARM).' }
     if (-not [Environment]::Is64BitOperatingSystem) { throw 'Kairokee needs 64-bit Windows 10 or 11.' }
     if ([Environment]::OSVersion.Version.Build -lt 17763) { throw 'Kairokee needs Windows 10 (version 1809 or newer) or Windows 11. Please update Windows.' }
+    if ($IsArm) {
+        if ([Environment]::OSVersion.Version.Build -lt 22000) { throw 'On a Windows on ARM computer, Kairokee needs Windows 11 (Windows 10 on ARM cannot run it).' }
+        Write-Note 'This is a Windows on ARM computer (for example Snapdragon). Kairokee runs here in compatibility mode on the processor: it works, but slowly. This has not been fully tested yet.'
+    }
     Write-Ok "Windows build $([Environment]::OSVersion.Version.Build)"
 
     New-Item -ItemType Directory -Force $KHome | Out-Null
@@ -229,9 +250,10 @@ function Invoke-Setup {
     if (-not (Test-Internet)) { throw 'No internet connection. The first setup needs the internet (about 3 GB). Connect and open Kairokee again.' }
     Write-Ok 'Internet works'
 
-    $gpu = Get-GpuPlan
+    if ($IsArm) { $gpu = @{ Device = 'cpu'; Name = ''; VramMB = 0; Reason = 'Windows on ARM: NVIDIA graphics cards are not supported here.'; Build = '' } }
+    else { $gpu = Get-GpuPlan }
     if ($gpu.Device -eq 'cuda') {
-        Write-Ok "NVIDIA graphics card: $($gpu.Name), $($gpu.VramMB) MB memory, driver $($gpu.Driver) -> fast GPU mode"
+        Write-Ok "NVIDIA graphics card: $($gpu.Name), $($gpu.VramMB) MB memory, driver $($gpu.Driver) -> fast GPU mode (PyTorch build $($gpu.Build))"
     }
     else {
         Write-Note "$($gpu.Reason)"
@@ -243,7 +265,7 @@ function Invoke-Setup {
         New-Item -ItemType Directory -Force $ToolsDir | Out-Null
         $zip = Join-Path $ToolsDir 'uv.zip'
         Write-Info 'Downloading...'
-        Get-File $UvUrl $zip
+        Get-File $UvUrl $zip $UvSha
         Expand-Archive -Force $zip $ToolsDir
         Remove-Item -Force $zip
         if (-not (Test-Path $Uv)) {
@@ -255,13 +277,13 @@ function Invoke-Setup {
     Write-Ok 'Ready'
 
     Write-Title "[3/$total] Getting Python (a private copy, nothing else on your PC is touched)"
-    Invoke-Native $Uv @('python', 'install', '3.11', '--no-bin') 'Installing Python' 3
+    Invoke-Native $Uv @('python', 'install', $PyRequest, '--no-bin') 'Installing Python' 3
     if (Test-Path $VenvDir) { Remove-Item -Recurse -Force $VenvDir }
-    Invoke-Native $Uv @('venv', $VenvDir, '--python', '3.11') 'Creating the Kairokee environment'
+    Invoke-Native $Uv @('venv', $VenvDir, '--python', $PyRequest) 'Creating the Kairokee environment'
     Write-Ok 'Ready'
 
     Write-Title "[4/$total] Installing PyTorch ($($gpu.Device.ToUpper()) version) - this is the big one, please wait"
-    Install-Torch $gpu.Device
+    Install-Torch $gpu.Device $gpu.Build
     Write-Ok 'Installed'
 
     Write-Title "[5/$total] Installing the other parts"
@@ -285,7 +307,7 @@ function Invoke-Setup {
                 if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
                 New-Item -ItemType Directory -Force $tmp | Out-Null
                 $zip = Join-Path $tmp 'ffmpeg.zip'
-                Get-File $url $zip
+                Get-File $url $zip $FfmpegSha
                 Expand-Archive -Force $zip (Join-Path $tmp 'x')
                 $ff = Get-ChildItem (Join-Path $tmp 'x') -Recurse -Filter ffmpeg.exe | Select-Object -First 1
                 $fp = Get-ChildItem (Join-Path $tmp 'x') -Recurse -Filter ffprobe.exe | Select-Object -First 1
@@ -313,14 +335,14 @@ function Invoke-Setup {
     }
     if (($device -eq 'cuda') -and (-not $test.cuda_build)) {
         Write-Note 'Another part replaced PyTorch with the CPU version. Putting the GPU version back...'
-        Install-Torch 'cuda' $true
+        Install-Torch 'cuda' $gpu.Build $true
         $test = Invoke-SelfTest
         if ($test.torch_error) { Show-DllHint $test.torch_error; throw "PyTorch does not start on this PC: $($test.torch_error)" }
     }
     if ($device -eq 'cuda') {
         if ((-not $test.cuda_available) -or ($test.gpu_test -ne 'ok')) {
             Write-Note "The graphics card did not pass the test ($($test.gpu_test)). Switching to CPU mode."
-            Install-Torch 'cpu' $true
+            Install-Torch 'cpu' '' $true
             $device = 'cpu'
             $test = Invoke-SelfTest
         }
@@ -345,6 +367,7 @@ function Invoke-Setup {
             VramMB = $vram
             Whisper = (Get-Whisper $device $vram)
             Segment = $seg
+            CudaBuild = $gpu.Build
             LastYtdlpCheck = (Get-Date).ToString('o')
         })
     Write-Host ''
@@ -382,7 +405,7 @@ function Confirm-YouTubeHelpers {
             Write-Info 'Getting Deno (a small program that YouTube downloads need)...'
             New-Item -ItemType Directory -Force $DenoDir | Out-Null
             $zip = Join-Path $DenoDir 'deno.zip'
-            Get-File $DenoUrl $zip
+            Get-File $DenoUrl $zip $DenoSha
             Expand-Archive -Force $zip $DenoDir
             Remove-Item -Force $zip
             if (-not (Test-Path $denoExe)) { throw 'deno.exe was not found after unpacking.' }
@@ -393,24 +416,35 @@ function Confirm-YouTubeHelpers {
     }
 }
 
-function Test-KairokeeRunning {
+function Test-KairokeeRunning([int]$p) {
     try {
-        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/library" -UseBasicParsing -TimeoutSec 3
-        return ($r.StatusCode -eq 200)
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$p/api/config" -UseBasicParsing -TimeoutSec 3
+        return (($r.StatusCode -eq 200) -and ($r.Content -match '"perMinute"'))
     }
     catch { return $false }
 }
 
+function Test-PortBusy([int]$p) {
+    return [bool](Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue)
+}
+
 function Start-Kairokee($state) {
-    $listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-    if ($listening) {
-        if (Test-KairokeeRunning) {
-            Write-Host 'Kairokee is already running. Opening it...' -ForegroundColor Green
-            Start-Process "http://localhost:$Port"
-            return
+    $Port = 0
+    for ($p = $FirstPort; $p -le $LastPort; $p++) {
+        if (Test-PortBusy $p) {
+            if (Test-KairokeeRunning $p) {
+                Write-Host 'Kairokee is already running. Opening it...' -ForegroundColor Green
+                Start-Process "http://localhost:$p"
+                return
+            }
+            continue
         }
-        throw "Another program is using port $Port. Close it (or restart the PC) and open Kairokee again."
+        $Port = $p
+        break
     }
+    if ($Port -eq 0) { throw "Other programs are using all the ports Kairokee can use ($FirstPort to $LastPort). Restart the PC and open Kairokee again." }
+    if ($Port -ne $FirstPort) { Write-Note "Port $FirstPort is used by another program, so Kairokee uses port $Port." }
+    $env:KAIROKEE_PORT = "$Port"
 
     New-Item -ItemType Directory -Force (Join-Path $DataDir 'output') | Out-Null
     $env:KAIROKEE_DATA = $DataDir
@@ -458,7 +492,7 @@ function Start-Kairokee($state) {
     $ready = $false
     for ($i = 0; $i -lt 120; $i++) {
         if ($proc.HasExited) { break }
-        if (Test-KairokeeRunning) { $ready = $true; break }
+        if (Test-KairokeeRunning $Port) { $ready = $true; break }
         Start-Sleep -Milliseconds 700
     }
     if ($ready) { Start-Process "http://localhost:$Port" }
@@ -469,6 +503,9 @@ function Start-Kairokee($state) {
 }
 
 # ----------------------------------------------------------------------------- main
+$IsArm = ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -or ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')
+# On Windows on ARM the normal x64 Python runs through Windows 11's emulation (most AI packages have no ARM build)
+if ($IsArm) { $PyRequest = 'cpython-3.11-windows-x86_64-none' } else { $PyRequest = '3.11' }
 $KHome = Get-KairokeeHome
 $ToolsDir = Join-Path $KHome 'tools'
 $Uv = Join-Path $ToolsDir 'uv.exe'

@@ -19,9 +19,11 @@ HOW TO START
    and takes 10 to 60 minutes, depending on your internet. Keep the window open and the PC awake.
    If the internet drops, just open Kairokee.bat again - it continues.
 5. After that, Kairokee starts in a few seconds and opens your browser at
-   http://localhost:8000
+   http://localhost:8000  (if another program already uses that address, Kairokee
+   picks the next free one, for example http://localhost:8001, and tells you).
 
 To stop Kairokee: close the black window.
+To stop a song that is being prepared, press Stop under the progress list.
 
 
 THE FIRST TIME YOU USE EACH FEATURE
@@ -33,10 +35,14 @@ Some AI models download only when first needed (once only, then they are kept):
 
 SPEED
 -----
- - PC with a recent NVIDIA graphics card: fast (about 15 seconds per song).
+ - PC with an NVIDIA graphics card (GTX 900 series up to RTX 50 series): fast
+   (about 15 seconds per song). RTX 50 cards need NVIDIA driver 580 or newer.
  - PC without one (or with an old one): works, but each song takes several minutes,
    and splitting the ad-libs or writing lyrics can take much longer.
    Kairokee tells you which mode it is using when it starts.
+ - AMD and Intel graphics are not used yet: those PCs use the processor (CPU).
+ - Windows on ARM (for example Snapdragon laptops) needs Windows 11. It runs in
+   compatibility mode on the processor: it works, but slowly (not fully tested yet).
  - If you have an NVIDIA card but Kairokee uses the CPU, update the graphics
    driver from nvidia.com/drivers, then open Kairokee-Repair.bat.
 

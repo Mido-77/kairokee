@@ -211,6 +211,7 @@
   <section id="progress" class="progress" hidden>
     <div id="progressTitle" class="title"></div>
     <ol id="steps"></ol>
+    <button id="stopBtn" class="btn" type="button" style="margin-top:.75rem" hidden>Stop</button>
     <div id="jobError" class="error" hidden></div>
   </section>
 
@@ -269,6 +270,7 @@
     </div>
     <div id="splitRow" class="mix" hidden style="flex-wrap:wrap">
       <button id="splitBtn" class="btn" type="button">Separate ad-libs from the singer</button>
+      <button id="splitStop" class="btn" type="button" hidden>Stop</button>
       <span id="splitMsg" class="muted" style="font-size:.85rem"></span>
     </div>
 
@@ -281,6 +283,7 @@
         <option value="fr">French</option>
       </select>
       <button id="genBtn" class="btn" type="button">Write lyrics</button>
+      <button id="genStop" class="btn" type="button" hidden>Stop</button>
       <span id="genMsg" class="muted" style="font-size:.85rem;flex-basis:100%"></span>
     </div>
     <div id="lyricsNote" class="hint" style="margin-left:0" hidden></div>
@@ -349,8 +352,7 @@ async function api(url, opts) {
     let msg = r.statusText;
     try { msg = (await r.json()).detail || msg; } catch (_) {}
     if (r.status === 404 && msg === "Not Found") {
-      msg = "The server does not know this feature yet. Replace server.py and kairokee.py with the new files, " +
-            "then stop the server (Ctrl+C) and start it again with: python server.py";
+      msg = "Kairokee was updated while it was open. Close the Kairokee window and open Kairokee again.";
     }
     throw new Error(msg);
   }
@@ -450,13 +452,17 @@ function renderResults(results, query) {
 }
 
 /* ---------- this computer: fast graphics card or not, and how long things take ---------- */
-let machine = { device: "cuda", perMinute: { fast: 15, split: 30, transcribe: 20 } };
-api("/api/config").then((c) => { machine = c; showDeviceNote(); }).catch(() => {});
+let machine = { device: "cuda", fast: true, perMinute: { fast: 15, split: 30, transcribe: 20 } };
+api("/api/config").then((c) => {
+  if (c.fast === undefined) c.fast = c.device !== "cpu";
+  machine = c;
+  showDeviceNote();
+}).catch(() => {});
 
 function showDeviceNote() {
   const el = $("#deviceNote");
-  el.hidden = machine.device === "cuda";
-  el.textContent = "This computer has no fast NVIDIA graphics card, so Kairokee uses the processor. " +
+  el.hidden = machine.fast;
+  el.textContent = "Kairokee cannot use a fast graphics chip on this computer, so it uses the processor. " +
     "It works, but songs take longer. You will see the expected time before you start.";
 }
 
@@ -481,7 +487,7 @@ function askMode(video, query) {
   pending = { video, query };
   $("#modeTitle").textContent = video.title;
   const fast = etaFor("fast", video.duration), split = etaFor("split", video.duration);
-  const slow = machine.device !== "cuda" && split > 8 * 60;
+  const slow = !machine.fast && split > 8 * 60;
   $("#modeWholeInfo").textContent = "One vocals track, ad-libs included. " +
     (slow ? "Recommended on this computer. " : "") + "Takes " + etaText(fast) + " on this computer.";
   $("#modeSplitInfo").textContent = "You can switch the ad-libs on or off on their own. Takes " +
@@ -498,6 +504,18 @@ $("#modeCancel").addEventListener("click", () => $("#modeDialog").close());
 $("#modeSplit").addEventListener("click", () => { $("#modeDialog").close(); startJob(pending.video, pending.query, true); });
 $("#modeWhole").addEventListener("click", () => { $("#modeDialog").close(); startJob(pending.video, pending.query, false); });
 
+/* ---------- stopping a job ---------- */
+async function stopJob(id) {
+  if (!id) return;
+  try { await postJSON("/api/job/" + id + "/cancel", {}); } catch (_) { /* it may have just finished */ }
+}
+let currentJob = null;
+$("#stopBtn").addEventListener("click", () => {
+  $("#stopBtn").disabled = true;
+  $("#stopBtn").textContent = "Stopping...";
+  stopJob(currentJob);
+});
+
 /* ---------- progress panel ---------- */
 const HINTS = {
   download: "Usually a few seconds.",
@@ -511,7 +529,7 @@ let prog = null;   // {withSplit, stage, since, detail, failed, duration}
 
 function hintFor(key) {
   const dur = prog && prog.duration;
-  if (key === "separate" && machine.device !== "cuda") {
+  if (key === "separate" && !machine.fast) {
     return "This computer uses the processor, so this step takes a few minutes. The app is working, it is not frozen.";
   }
   if (key === "split") {
@@ -585,13 +603,24 @@ async function startJob(video, query, withSplit) {
       id: video.id, title: video.title, url: video.url, channel: video.channel || "",
       duration: video.duration || null, query, split: withSplit,
     });
+    currentJob = job;
+    const stop = $("#stopBtn");
+    stop.hidden = false; stop.disabled = false; stop.textContent = "Stop";
     for (;;) {
       await new Promise((r) => setTimeout(r, 1500));
       const j = await api("/api/job/" + job);
+      if (j.state === "cancelled") {
+        prog = null; busy = false; currentJob = null;
+        stop.hidden = true;
+        $("#progress").hidden = true;
+        setStatus("Stopped. Nothing was saved for this song.", false);
+        return;
+      }
       if (j.state === "error") { setStage(j.stage, "", true); throw new Error(j.error); }
       setStage(j.stage, j.detail);
       if (j.state === "done") {
-        prog = null; busy = false;
+        prog = null; busy = false; currentJob = null;
+        $("#stopBtn").hidden = true;
         $("#progress").hidden = true;
         await loadLibrary();
         openSong(j.slug);
@@ -599,10 +628,11 @@ async function startJob(video, query, withSplit) {
       }
     }
   } catch (err) {
-    busy = false;
+    busy = false; currentJob = null;
+    $("#stopBtn").hidden = true;
     const el = $("#jobError");
     el.hidden = false;
-    el.textContent = err.message + " (details are in the terminal where server.py is running)";
+    el.textContent = err.message + " (details are in the Kairokee window)";
   }
 }
 
@@ -883,13 +913,19 @@ $("#splitBtn").addEventListener("click", async () => {
   const t0 = Date.now();
   try {
     const { job } = await api("/api/song/" + enc(slug) + "/split", { method: "POST" });
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const j = await api("/api/job/" + job);
-      if (j.state === "error") throw new Error(j.error);
-      if (j.state === "done") break;
-      msg.textContent = (j.detail || "Working...") + "  (" + fmt((Date.now() - t0) / 1000) + ")";
-    }
+    const stop = $("#splitStop");
+    stop.hidden = false; stop.disabled = false;
+    stop.onclick = () => { stop.disabled = true; stopJob(job); };
+    try {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const j = await api("/api/job/" + job);
+        if (j.state === "cancelled") { msg.textContent = "Stopped."; btn.disabled = false; return; }
+        if (j.state === "error") throw new Error(j.error);
+        if (j.state === "done") break;
+        msg.textContent = (j.detail || "Working...") + "  (" + fmt((Date.now() - t0) / 1000) + ")";
+      }
+    } finally { stop.hidden = true; }
     await openSong(slug);
   } catch (err) {
     msg.className = "error";
@@ -907,13 +943,19 @@ $("#genBtn").addEventListener("click", async () => {
   msg.textContent = "Starting...";
   try {
     const { job } = await postJSON("/api/song/" + enc(slug) + "/transcribe", { language: $("#langSel").value });
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const j = await api("/api/job/" + job);
-      if (j.state === "error") throw new Error(j.error);
-      if (j.state === "done") break;
-      msg.textContent = (j.detail || "Working...") + "  (" + fmt((Date.now() - t0) / 1000) + ")";
-    }
+    const stop = $("#genStop");
+    stop.hidden = false; stop.disabled = false;
+    stop.onclick = () => { stop.disabled = true; stopJob(job); };
+    try {
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const j = await api("/api/job/" + job);
+        if (j.state === "cancelled") { msg.textContent = "Stopped."; btn.disabled = false; return; }
+        if (j.state === "error") throw new Error(j.error);
+        if (j.state === "done") break;
+        msg.textContent = (j.detail || "Working...") + "  (" + fmt((Date.now() - t0) / 1000) + ")";
+      }
+    } finally { stop.hidden = true; }
     await openSong(slug);
   } catch (err) {
     msg.className = "error";

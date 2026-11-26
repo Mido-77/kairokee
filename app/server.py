@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 import kairokee as kk
 
-PORT = 8000
+PORT = int(os.environ.get("KAIROKEE_PORT") or 8000)   # the launcher picks a free port
 # On Windows, closing a browser tab can print a scary but harmless "connection reset" traceback.
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 # Private by default: only this computer can open the app.
@@ -43,6 +43,39 @@ jobs = {}
 job_lock = threading.Lock()
 
 
+def start_job(stage, slug, work, on_cancel=None):
+    """Run work(job) in the background (one job at a time). Returns the job id for /api/job/<id>."""
+    with job_lock:
+        if any(j["state"] == "running" for j in jobs.values()):
+            raise HTTPException(409, "Another song is still being prepared. Wait for it to finish.")
+        for old in [k for k, j in jobs.items() if j["state"] != "running"][:-20]:
+            del jobs[old]   # forget old finished jobs
+        kk.CANCEL.clear()
+        job_id = uuid.uuid4().hex[:8]
+        job = {"state": "running", "stage": stage, "detail": "", "error": None, "slug": slug}
+        jobs[job_id] = job
+
+    def run():
+        try:
+            work(job)
+            job["state"] = "done"
+        except kk.Cancelled:
+            if on_cancel:
+                try:
+                    on_cancel()
+                except Exception as e:
+                    print(f"[!] Could not clean up after stopping: {e}")
+            job.update(state="cancelled", error="Stopped.")
+            print("      stopped by the user.")
+        except kk.KairokeeError as e:
+            job.update(state="error", error=str(e))
+        except Exception as e:  # anything unexpected: show it instead of hanging
+            job.update(state="error", error=f"{type(e).__name__}: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+    return job_id
+
+
 # --------------------------------------------------------------------------- this computer and how long things take
 TIMINGS_FILE = kk.DATA / "timings.json"
 timings_lock = threading.Lock()
@@ -50,16 +83,17 @@ device_info = {}
 # Seconds of waiting per minute of song. Used until this computer has measured its own speed.
 DEFAULT_PER_MINUTE = {
     "cuda": {"fast": 15, "split": 30, "transcribe": 20},
+    "mps": {"fast": 25, "split": 90, "transcribe": 30},     # Apple Silicon: a first guess, replaced by real timings
     "cpu": {"fast": 70, "split": 440, "transcribe": 40},
 }
 
 
 def detect_device():
-    """'cuda' if a usable NVIDIA card is there, else 'cpu'. The launcher tells us; otherwise we ask PyTorch."""
+    """'cuda' (NVIDIA), 'mps' (Apple Silicon) or 'cpu'. The launcher tells us; otherwise we ask PyTorch."""
     if device_info:
         return device_info
     forced = os.environ.get("KAIROKEE_DEVICE")
-    if forced in ("cuda", "cpu"):
+    if forced in DEFAULT_PER_MINUTE:
         device_info.update(device=forced, gpu=os.environ.get("KAIROKEE_GPU_NAME") or None)
         return device_info
     dev, name = "cpu", None
@@ -67,6 +101,8 @@ def detect_device():
         import torch
         if torch.cuda.is_available():
             dev, name = "cuda", torch.cuda.get_device_name(0)
+        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            dev, name = "mps", "Apple Silicon"
     except Exception:
         pass
     device_info.update(device=dev, gpu=name)
@@ -109,7 +145,8 @@ def api_config():
         samples = (saved.get(kind) or {}).get("samples") or []
         per[kind] = round(statistics.median(samples), 1) if samples else default
         measured[kind] = bool(samples)
-    return {"device": info["device"], "gpu": info["gpu"], "perMinute": per, "measured": measured}
+    return {"device": info["device"], "gpu": info["gpu"], "fast": info["device"] != "cpu",
+            "perMinute": per, "measured": measured}
 
 
 # --------------------------------------------------------------------------- helpers
@@ -175,50 +212,43 @@ class ProcessRequest(BaseModel):
 
 @app.post("/api/process")
 def api_process(req: ProcessRequest):
-    with job_lock:
-        if any(j["state"] == "running" for j in jobs.values()):
-            raise HTTPException(409, "Another song is still being prepared. Wait for it to finish.")
-        job_id = uuid.uuid4().hex[:8]
-        job = {"state": "running", "stage": "download", "detail": "", "error": None,
-               "slug": kk.slug(req.title)}
-        jobs[job_id] = job
-
     video = {"id": req.id, "title": req.title, "url": req.url,
              "channel": req.channel, "duration": req.duration}
+    name = kk.folder_name(video)
+    folder = OUT / name
+    is_new = not (folder / "instrumental.mp3").exists()
 
-    def work():
-        try:
-            kk.check_tools()
-            started = time.time()
-            stamps = []   # (stage, time it began)
+    def forget_unfinished():
+        """Stopped: remove the half-made song folder (only if this was a new song)."""
+        if is_new and folder.resolve().parent == OUT.resolve():
+            shutil.rmtree(folder, ignore_errors=True)
 
-            def on_stage(s):
-                stamps.append((s, time.time()))
-                job.update(stage=s, detail="")
+    def work(job):
+        kk.check_tools()
+        started = time.time()
+        stamps = []   # (stage, time it began)
 
-            kk.run_pipeline(video, req.query, keep="both", split=req.split,
-                            stage=on_stage,
-                            detail=lambda m: job.__setitem__("detail", m))
-            finished = time.time()
-            spent = {}
-            for i, (name, t0) in enumerate(stamps):
-                t1 = stamps[i + 1][1] if i + 1 < len(stamps) else finished
-                spent[name] = spent.get(name, 0) + (t1 - t0)
-            if req.duration:
-                record_timing("fast", finished - started - spent.get("split", 0) - spent.get("transcribe", 0),
-                              req.duration)
-                if "split" in spent:
-                    record_timing("split", spent["split"], req.duration)
-                if "transcribe" in spent:
-                    record_timing("transcribe", spent["transcribe"], req.duration)
-            job["state"] = "done"
-        except kk.KairokeeError as e:
-            job.update(state="error", error=str(e))
-        except Exception as e:  # anything unexpected: show it instead of hanging
-            job.update(state="error", error=f"{type(e).__name__}: {e}")
+        def on_stage(s):
+            stamps.append((s, time.time()))
+            job.update(stage=s, detail="")
 
-    threading.Thread(target=work, daemon=True).start()
-    return {"job": job_id}
+        kk.run_pipeline(video, req.query, keep="both", split=req.split, folder=folder,
+                        stage=on_stage,
+                        detail=lambda m: job.__setitem__("detail", m))
+        finished = time.time()
+        spent = {}
+        for i, (step, t0) in enumerate(stamps):
+            t1 = stamps[i + 1][1] if i + 1 < len(stamps) else finished
+            spent[step] = spent.get(step, 0) + (t1 - t0)
+        if req.duration:
+            record_timing("fast", finished - started - spent.get("split", 0) - spent.get("transcribe", 0),
+                          req.duration)
+            if "split" in spent:
+                record_timing("split", spent["split"], req.duration)
+            if "transcribe" in spent:
+                record_timing("transcribe", spent["transcribe"], req.duration)
+
+    return {"job": start_job("download", name, work, forget_unfinished)}
 
 
 @app.get("/api/job/{job_id}")
@@ -227,6 +257,18 @@ def api_job(job_id: str):
     if not job:
         raise HTTPException(404, "Unknown job")
     return job
+
+
+@app.post("/api/job/{job_id}/cancel")
+def api_job_cancel(job_id: str):
+    """Stop a running job. The helper program doing the heavy work is closed right away."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Unknown job")
+    if job["state"] == "running":
+        kk.CANCEL.set()
+        job["detail"] = "Stopping..."
+    return {"ok": True}
 
 
 @app.get("/api/library")
@@ -310,29 +352,16 @@ def api_split(slug: str):
     vocals = folder / "vocals.mp3"
     if not vocals.exists():
         raise HTTPException(400, "This song has no vocals track to split.")
-    with job_lock:
-        if any(j["state"] == "running" for j in jobs.values()):
-            raise HTTPException(409, "Another song is still being prepared. Wait for it to finish.")
-        job_id = uuid.uuid4().hex[:8]
-        job = {"state": "running", "stage": "split", "detail": "", "error": None, "slug": slug}
-        jobs[job_id] = job
 
-    def work():
-        try:
-            began = time.time()
-            kk.split_into_mp3s(vocals, folder, lambda m: job.__setitem__("detail", m))
-            meta = read_meta(folder)
-            record_timing("split", time.time() - began, meta.get("video_duration"))
-            meta["split"] = True
-            write_meta(folder, meta)
-            job["state"] = "done"
-        except kk.KairokeeError as e:
-            job.update(state="error", error=str(e))
-        except Exception as e:
-            job.update(state="error", error=f"{type(e).__name__}: {e}")
+    def work(job):
+        began = time.time()
+        kk.split_into_mp3s(vocals, folder, lambda m: job.__setitem__("detail", m))
+        meta = read_meta(folder)
+        record_timing("split", time.time() - began, meta.get("video_duration"))
+        meta["split"] = True
+        write_meta(folder, meta)
 
-    threading.Thread(target=work, daemon=True).start()
-    return {"job": job_id}
+    return {"job": start_job("split", slug, work, lambda: shutil.rmtree(folder / "split", ignore_errors=True))}
 
 
 AI_LABEL = "Written by the app"
@@ -457,37 +486,23 @@ def api_transcribe(slug: str, body: TranscribeBody):
     meta = read_meta(folder)
     language = body.language if body.language in kk.WHISPER_LANGS else kk.guess_language(
         meta.get("title"), meta.get("query"), folder.name)
-    with job_lock:
-        if any(j["state"] == "running" for j in jobs.values()):
-            raise HTTPException(409, "Another job is still running. Wait for it to finish.")
-        job_id = uuid.uuid4().hex[:8]
-        job = {"state": "running", "stage": "transcribe", "detail": "", "error": None, "slug": slug}
-        jobs[job_id] = job
 
-    def work():
-        try:
-            cur = folder / "lyrics.lrc"
-            before = cur.read_text(encoding="utf-8") if cur.exists() else None
-            source_before = read_meta(folder).get("lyrics_source")
-            began = time.time()
-            source = kk.write_lyrics_from_audio(folder, language,
-                                                lambda m: job.__setitem__("detail", m))
-            meta = read_meta(folder)
-            record_timing("transcribe", time.time() - began, meta.get("video_duration"))
-            # keep the old lyrics so they can be restored (but never keep app-written ones over better ones)
-            if before and not str(source_before or "").startswith(AI_LABEL):
-                (folder / "lyrics.previous.lrc").write_text(before, encoding="utf-8")
-                meta["previous_source"] = source_before
-            meta["lyrics_source"] = source
-            write_meta(folder, meta)
-            job["state"] = "done"
-        except kk.KairokeeError as e:
-            job.update(state="error", error=str(e))
-        except Exception as e:
-            job.update(state="error", error=f"{type(e).__name__}: {e}")
+    def work(job):
+        cur = folder / "lyrics.lrc"
+        before = cur.read_text(encoding="utf-8") if cur.exists() else None
+        source_before = read_meta(folder).get("lyrics_source")
+        began = time.time()
+        source = kk.write_lyrics_from_audio(folder, language, lambda m: job.__setitem__("detail", m))
+        meta = read_meta(folder)
+        record_timing("transcribe", time.time() - began, meta.get("video_duration"))
+        # keep the old lyrics so they can be restored (but never keep app-written ones over better ones)
+        if before and not str(source_before or "").startswith(AI_LABEL):
+            (folder / "lyrics.previous.lrc").write_text(before, encoding="utf-8")
+            meta["previous_source"] = source_before
+        meta["lyrics_source"] = source
+        write_meta(folder, meta)
 
-    threading.Thread(target=work, daemon=True).start()
-    return {"job": job_id}
+    return {"job": start_job("transcribe", slug, work)}
 
 
 # the web page: static/index.html (or index.html next to this file, if you put it there)
@@ -529,7 +544,8 @@ if __name__ == "__main__":
         print("  Phone mode is ON: anyone on this Wi-Fi can open the app.")
     else:
         print("  Private mode: only this computer can open the app.")
-        print("  (To use it from a phone, start with:  python server.py --phone)")
-    print("  Stop with Ctrl+C\n")
+        phone = "Kairokee-Phone.command" if kk.IS_MAC else "Kairokee-Phone.bat"
+        print(f"  (To use it from a phone, open {phone} instead.)")
+    print("  To stop Kairokee, close this window.\n")
     threading.Thread(target=detect_device, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0" if PHONE_MODE else "127.0.0.1", port=PORT, log_level="warning")

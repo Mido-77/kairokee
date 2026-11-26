@@ -13,13 +13,13 @@ Results are saved in  output/<song name>/
 """
 import argparse
 import difflib
-import gc
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -43,7 +43,10 @@ OLD_KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
 WHISPER_MODEL = os.environ.get("KAIROKEE_WHISPER_MODEL", "medium")
 WHISPER_LANGS = {"ar", "en", "fr"}
 MATCH_THRESHOLD = 0.75   # how much of a result's song title must match our search to count as "the same song"
-USER_AGENT = "kairokee/0.1 (personal project)"
+USER_AGENT = "kairokee/0.2 (personal project)"
+IS_MAC = sys.platform == "darwin"
+# what to open when the installed parts are broken (the message must name the right file on each system)
+REPAIR = "Kairokee-Repair.command" if IS_MAC else "Kairokee-Repair.bat"
 
 
 # --------------------------------------------------------------------------- helpers
@@ -51,8 +54,61 @@ class KairokeeError(Exception):
     """Something went wrong in a way we can explain to the user."""
 
 
+class Cancelled(KairokeeError):
+    """The user pressed Stop."""
+
+
+# Set by the web server when the user presses Stop. Only one job runs at a time, so one flag is enough.
+CANCEL = threading.Event()
+
+
 def die(msg):
     raise KairokeeError(msg)
+
+
+def check_cancel():
+    if CANCEL.is_set():
+        raise Cancelled("Stopped.")
+
+
+def run_child(cmd, env=None):
+    """Run a helper program and return its exit code. Stops it right away if the user presses Stop."""
+    proc = subprocess.Popen(cmd, env=env)
+    while True:
+        try:
+            return proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            if CANCEL.is_set():
+                proc.kill()
+                proc.wait()
+                raise Cancelled("Stopped.")
+
+
+def compute_device():
+    """'cuda' (NVIDIA), 'mps' (Apple Silicon graphics) or 'cpu'. The launcher decides and tells us;
+    without the launcher (command line use) we ask PyTorch."""
+    forced = os.environ.get("KAIROKEE_DEVICE")
+    if forced in ("cuda", "mps", "cpu"):
+        return forced
+    try:
+        import torch
+    except ImportError:
+        die(f"PyTorch is not installed. Close Kairokee and open {REPAIR}.")
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def child_env(device):
+    """Settings for the helper programs (separation, ad-lib split, lyrics)."""
+    env = dict(os.environ)
+    env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")   # Apple: run the few unsupported steps on the CPU
+    if device == "cpu":
+        env["CUDA_VISIBLE_DEVICES"] = "-1"              # really use the CPU, even if a card is there
+    return env
 
 
 def fmt_duration(seconds):
@@ -70,6 +126,22 @@ def slug(text):
     return text[:80].strip(" .") or "song"
 
 
+def folder_name(video):
+    """Folder name for a video. Two different songs with the same title must not overwrite each other,
+    so if the title's folder already holds ANOTHER video, the video id is added to the name."""
+    name = slug(video["title"])
+    vid = video.get("id")
+    meta_path = OUT / name / "meta.json"
+    if vid and meta_path.exists():
+        try:
+            other = json.loads(meta_path.read_text(encoding="utf-8")).get("id")
+        except Exception:
+            other = None
+        if other and other != vid:
+            return f"{name[:68].strip(' .')} {vid}"
+    return name
+
+
 def clean_title(title):
     """'Artist - Song (Official Video)' -> 'Artist - Song' (better for lyrics search)."""
     title = re.sub(r"[\(\[\{].*?[\)\]\}]", " ", title)
@@ -81,11 +153,11 @@ def clean_title(title):
 
 def check_tools():
     if not shutil.which("ffmpeg"):
-        die("ffmpeg not found. Close Kairokee and run Kairokee-Repair.bat.")
+        die(f"ffmpeg not found. Close Kairokee and open {REPAIR}.")
     try:
         import yt_dlp  # noqa: F401
     except ImportError:
-        die("yt-dlp is not installed. Run:  pip install -r requirements.txt")
+        die(f"yt-dlp is not installed. Close Kairokee and open {REPAIR}.")
 
 
 # --------------------------------------------------------------------------- 1. search
@@ -160,12 +232,17 @@ def download_audio(video, folder):
     import yt_dlp
 
     log = _YtdlpLog()
+
+    def stop_if_cancelled(_progress):
+        check_cancel()
+
     opts = {
         "format": "bestaudio/best",
         "outtmpl": str(folder / "original.%(ext)s"),
         "noplaylist": True,
         "noprogress": True,
-        "logger": log,                        # everything yt-dlp says goes to the black window
+        "logger": log,                        # everything yt-dlp says goes to the Kairokee window
+        "progress_hooks": [stop_if_cancelled],
         "js_runtimes": {"deno": {}},          # YouTube needs a JavaScript runtime (Deno) to give out audio
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
     }
@@ -175,6 +252,7 @@ def download_audio(video, folder):
         with yt_dlp.YoutubeDL(opts) as ydl:
             code = ydl.download([video["url"]])
     except Exception as e:
+        check_cancel()   # pressing Stop also ends up here: report it as a stop, not as a failure
         (folder / "download.log").write_text("\n".join(log.lines), encoding="utf-8")
         die(f"Download failed: {log.last_problem() or type(e).__name__ + ': ' + str(e)}")
 
@@ -198,46 +276,67 @@ def download_audio(video, folder):
 
 
 # --------------------------------------------------------------------------- 3. separate
-def separate_vocals(wav, folder, segment=None):
+DEVICE_NAMES = {"cuda": "NVIDIA graphics card", "mps": "Apple graphics (Metal)", "cpu": "processor (CPU)"}
+CPU_FALLBACK_MSG = ("The graphics chip could not be used for this step, so it is using the processor. "
+                    "This is slower. The app is working, it is not frozen.")
+
+
+def demucs_worker(args):
+    """Runs in its own process (a crash here cannot take the server down).
+    Splits a song into vocals and everything else with Demucs.  args: wav out_dir device segment
+    The audio is read with ffmpeg and written with soundfile, so this works with any PyTorch version
+    (newer torchaudio versions can no longer save files on their own)."""
+    wav_path, out_dir, device, segment = (args + ["", "", "", ""])[:4]
+    # Demucs model files are older-style pickles that PyTorch 2.6+ refuses to load by default
+    os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    import torch
+    import soundfile as sf
+    from demucs.apply import apply_model
+    from demucs.audio import AudioFile
+    from demucs.pretrained import get_model
+
+    model = get_model("htdemucs")
+    model.cpu()
+    model.eval()
+    wav = AudioFile(Path(wav_path)).read(streams=0, samplerate=model.samplerate, channels=model.audio_channels)
+    ref = wav.mean(0)
+    mean, std = ref.mean(), ref.std()
+    if float(std) < 1e-8:
+        std = torch.tensor(1.0)
+    wav = (wav - mean) / std
+    with torch.no_grad():
+        sources = apply_model(model, wav[None], device=device, shifts=1, split=True, overlap=0.25,
+                              progress=True, segment=float(segment) if segment else None)[0]
+    sources = sources * std + mean
+    vi = model.sources.index("vocals")
+    vocals = sources[vi]
+    rest = sources.sum(0) - vocals
+    for name, x in (("vocals", vocals), ("no_vocals", rest)):
+        x = x / max(1.01 * float(x.abs().max()), 1.0)    # like Demucs' default: scale down instead of clipping
+        sf.write(str(Path(out_dir) / f"{name}.wav"), x.cpu().numpy().T, model.samplerate, subtype="PCM_16")
+
+
+def separate_vocals(wav, folder, segment=None, say=lambda msg: None):
     if not segment and os.environ.get("KAIROKEE_SEGMENT"):   # set by the launcher for GPUs with little memory
         segment = int(os.environ["KAIROKEE_SEGMENT"])
-    try:
-        import torch
-    except ImportError:
-        die("PyTorch is not installed. Close Kairokee and run Kairokee-Repair.bat.")
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cpu":
-        print("[!] GPU not detected - running on CPU (slow, a few minutes per song).")
-    else:
-        print(f"      using GPU: {torch.cuda.get_device_name(0)}")
-
-    print("\n[2/3] Separating vocals from instrumental (first run downloads the model, ~80 MB)...")
+    device = compute_device()
+    print(f"\n[2/3] Separating vocals from instrumental on the {DEVICE_NAMES[device]} "
+          "(first run downloads the model, ~80 MB)...")
     work = folder / "demucs"
-    cmd = [
-        sys.executable, "-m", "demucs",
-        "--two-stems", "vocals",
-        "-n", "htdemucs",
-        "-d", device,
-        "-o", str(work),
-        str(wav),
-    ]
-    if segment:  # smaller chunks = less GPU memory
-        cmd.insert(-1, "--segment")
-        cmd.insert(-1, str(segment))
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError:
-        die(
-            "Separation failed - read the error printed just above. If it says 'out of memory', "
-            "close other GPU apps and try again (Kairokee-Repair.bat is not needed for this)."
-        )
-
-    stem_dir = work / "htdemucs" / wav.stem
-    vocals, instrumental = stem_dir / "vocals.wav", stem_dir / "no_vocals.wav"
-    if not (vocals.exists() and instrumental.exists()):
-        die(f"Expected stems not found in {stem_dir}")
-    return vocals, instrumental
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    vocals, instrumental = work / "vocals.wav", work / "no_vocals.wav"
+    for dev in ([device, "cpu"] if device != "cpu" else ["cpu"]):
+        if dev != device:
+            print("[!] Separation on the graphics chip failed - trying again on the processor (slower).")
+            say(CPU_FALLBACK_MSG)
+        cmd = [sys.executable, str(Path(__file__).resolve()), "--demucs-worker",
+               str(wav), str(work), dev, str(segment or "")]
+        if run_child(cmd, child_env(dev)) == 0 and vocals.exists() and instrumental.exists():
+            return vocals, instrumental
+    die("Separation failed - read the error printed in the Kairokee window. If it says 'out of memory', "
+        "close other programs and try again.")
 
 
 def to_mp3(src, dst):
@@ -458,7 +557,7 @@ def transcribe_to_lrc(audio, language=None, say=lambda msg: None):
     import importlib.util
 
     if importlib.util.find_spec("faster_whisper") is None:
-        die("Writing lyrics from audio is not installed. Run:  pip install -r requirements-whisper.txt")
+        die(f"Writing lyrics from audio is not installed. Close Kairokee and open {REPAIR}.")
     audio = Path(audio)
     cache = MODEL_DIR / "whisper"
     first_time = not (cache.exists() and any(cache.glob(f"*faster-whisper-{WHISPER_MODEL}*")))
@@ -469,22 +568,22 @@ def transcribe_to_lrc(audio, language=None, say=lambda msg: None):
 
     started = time.time()
     used = None
-    for device in ("cuda", "cpu"):
-        if device == "cuda":
+    # faster-whisper can use NVIDIA cards but not Apple graphics (on a Mac it runs on the fast Apple CPU)
+    devices = ["cuda", "cpu"] if compute_device() == "cuda" else ["cpu"]
+    for device in devices:
+        if device == devices[0]:
             size = {"small": "0.5 GB", "medium": "1.5 GB", "large-v3": "3 GB"}.get(WHISPER_MODEL, "over 1 GB")
             say(f"First time only: downloading the lyrics model (about {size}). This can take 10 minutes or more."
                 if first_time else "")   # otherwise the page shows the expected time for this computer
         else:
-            say("The graphics card could not be used for this step, so it is using the CPU. "
-                "This is slower. The app is working, it is not frozen.")
+            say(CPU_FALLBACK_MSG)
         cmd = [sys.executable, str(Path(__file__).resolve()), "--whisper-worker",
                str(audio), str(out), language or "", device]
-        result = subprocess.run(cmd)
-        if result.returncode == 0 and out.exists():
+        if run_child(cmd, child_env(device)) == 0 and out.exists():
             used = device
             break
     else:
-        die("Could not write the lyrics from the audio. Read the error printed in the terminal.")
+        die("Could not write the lyrics from the audio. Read the error printed in the Kairokee window.")
 
     data = json.loads(out.read_text(encoding="utf-8"))
     out.unlink(missing_ok=True)
@@ -515,50 +614,64 @@ def _rms(path):
     return float(np.sqrt((data ** 2).mean())) if data.size else 0.0
 
 
-def split_vocals(vocals_path, folder, say=lambda msg: None):
-    """Split a vocals track into lead vocals and backing vocals / ad-libs.
-    Returns (lead_wav, backing_wav). Needs the extra packages in requirements-adlibs.txt."""
-    try:
-        from audio_separator.separator import Separator
-    except ImportError:
-        die("The ad-lib splitter is not installed. Run:  pip install -r requirements-adlibs.txt")
+def split_worker(args):
+    """Runs in its own process (a crash or a full graphics memory here cannot take the server down).
+    args: vocals_path work_dir device"""
+    vocals_path, work_dir, device = (args + ["", "", ""])[:3]
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     import logging
 
-    work = folder / "split"
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True)
-    MODEL_DIR.mkdir(exist_ok=True)
+    import torch
+    if device == "cpu":   # the splitter picks the graphics chip by itself: hide it to really use the CPU
+        torch.cuda.is_available = lambda: False
+        if getattr(torch.backends, "mps", None) is not None:
+            torch.backends.mps.is_available = lambda: False
+    from audio_separator.separator import Separator
+
     model = os.environ.get("KAIROKEE_KARAOKE_MODEL") or KARAOKE_MODEL
     precision = (os.environ.get("KAIROKEE_SPLIT_PRECISION") or "fp32").lower()   # fp32 | autocast | fp16
     extra = {}
-    if precision == "autocast":
+    if device != "cpu" and precision == "autocast":
         extra["use_autocast"] = True
-    elif precision == "fp16":
+    elif device != "cpu" and precision == "fp16":
         extra["use_native_fp16"] = True
-    first_time = not (MODEL_DIR / model).exists()
-    if first_time:
-        say("Downloading the ad-lib model (first time only, about 900 MB). This can take 10 minutes or more.")
-        print("      downloading the ad-lib model (first time only, ~900 MB)...")
-    else:
-        say("Loading the ad-lib model...")
-
-    sep = Separator(output_dir=str(work), output_format="WAV",
+    sep = Separator(output_dir=str(work_dir), output_format="WAV",
                     model_file_dir=str(MODEL_DIR), log_level=logging.WARNING, **extra)
     sep.load_model(model_filename=model)
     print(f"      ad-lib splitter: model {model}, device {getattr(sep, 'torch_device', '?')}, precision {precision}")
-    say("")   # the page shows the expected time for this computer
     print("      splitting lead vocals from backing vocals...")
     sep.separate(str(vocals_path))
-    del sep
-    gc.collect()
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
 
-    files = list(work.glob("*.wav"))
+
+def split_vocals(vocals_path, folder, say=lambda msg: None):
+    """Split a vocals track into lead vocals and backing vocals / ad-libs. Returns (lead_wav, backing_wav)."""
+    import importlib.util
+
+    if importlib.util.find_spec("audio_separator") is None:
+        die(f"The ad-lib splitter is not installed. Close Kairokee and open {REPAIR}.")
+    work = folder / "split"
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    model = os.environ.get("KAIROKEE_KARAOKE_MODEL") or KARAOKE_MODEL
+    device = compute_device()
+    files = []
+    for dev in ([device, "cpu"] if device != "cpu" else ["cpu"]):
+        if dev != device:
+            print("[!] The ad-lib split on the graphics chip failed - trying again on the processor (slower).")
+            say(CPU_FALLBACK_MSG)
+        elif not (MODEL_DIR / model).exists():
+            say("Downloading the ad-lib model (first time only, about 900 MB). This can take 10 minutes or more.")
+            print("      downloading the ad-lib model (first time only, ~900 MB)...")
+        else:
+            say("")   # the page shows the expected time for this computer
+        shutil.rmtree(work, ignore_errors=True)
+        work.mkdir(parents=True)
+        cmd = [sys.executable, str(Path(__file__).resolve()), "--split-worker", str(vocals_path), str(work), dev]
+        if run_child(cmd, child_env(dev)) == 0:
+            files = list(work.glob("*.wav"))
+            if len(files) >= 2:
+                break
+    if not files:
+        die("The ad-lib split failed - read the error printed in the Kairokee window.")
     lead = next((f for f in files if any(k in f.name.lower() for k in ("(vocals)", "(karaoke)", "(lead)"))), None)
     back = next((f for f in files if f != lead and any(
         k in f.name.lower() for k in ("(instrumental)", "(other)", "(backing)"))), None)
@@ -631,16 +744,18 @@ def fetch_cover(folder, queries, duration=None, video_id=None):
 # --------------------------------------------------------------------------- pipeline
 def run_pipeline(video, query, keep="both", keep_temp=False, segment=None,
                  stage=lambda name: None, choose_keep=None, split=True,
-                 detail=lambda msg: None, transcribe=True):
+                 detail=lambda msg: None, transcribe=True, folder=None):
     """download -> separate -> encode -> lyrics. Used by both the CLI and the web server."""
-    folder = OUT / slug(video["title"])
+    folder = folder or OUT / folder_name(video)
     folder.mkdir(parents=True, exist_ok=True)
 
     stage("download")
     wav = download_audio(video, folder)
 
+    check_cancel()
     stage("separate")
-    vocals, instrumental = separate_vocals(wav, folder, segment)
+    vocals, instrumental = separate_vocals(wav, folder, segment, detail)
+    check_cancel()
 
     if keep is None and choose_keep:
         keep = choose_keep()
@@ -658,9 +773,12 @@ def run_pipeline(video, query, keep="both", keep_temp=False, segment=None,
         try:
             split_into_mp3s(vocals, folder, detail)
             split_ok = True
+        except Cancelled:
+            raise
         except Exception as e:  # not fatal: the song still works without the ad-lib split
             print(f"\n[!] Could not split the ad-libs: {e}\n")
 
+    check_cancel()
     stage("lyrics")
     queries = build_queries(query, video["title"])
     found = fetch_lyrics(queries, video["duration"])
@@ -682,6 +800,8 @@ def run_pipeline(video, query, keep="both", keep_temp=False, segment=None,
             source = write_lyrics_from_audio(folder, guess_language(query, video["title"]),
                                              detail, fallback_audio=vocals)
             print(f"      lyrics: {source}")
+        except Cancelled:
+            raise
         except Exception as e:  # not fatal: the song works without lyrics
             print(f"\n[!] Could not write lyrics from the audio: {e}\n")
 
@@ -714,8 +834,10 @@ def run_pipeline(video, query, keep="both", keep_temp=False, segment=None,
 
 # --------------------------------------------------------------------------- command line
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "--whisper-worker":
-        whisper_worker(sys.argv[2:])
+    workers = {"--whisper-worker": whisper_worker, "--demucs-worker": demucs_worker,
+               "--split-worker": split_worker}
+    if len(sys.argv) > 1 and sys.argv[1] in workers:
+        workers[sys.argv[1]](sys.argv[2:])
         return
     ap = argparse.ArgumentParser(description="kairokee step 1: search, download, separate, lyrics")
     ap.add_argument("query", nargs="+", help="song name (and artist)")
