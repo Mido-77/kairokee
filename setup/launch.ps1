@@ -31,9 +31,9 @@ $MinRamGB = 6
 # Fixed versions with checksums: a broken or changed upstream release cannot break new installs.
 $UvUrl = 'https://github.com/astral-sh/uv/releases/download/0.13.9/uv-x86_64-pc-windows-msvc.zip'
 $UvSha = 'edd61f7f5728a56cc62455386661860bdfc7bab65872f39b0c25bdcc1d8e1beb'
-$FfmpegUrls = @(
-    'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.1-essentials_build.zip',
-    'https://github.com/GyanD/codexffmpeg/releases/download/9.1/ffmpeg-9.1-essentials_build.zip'
+$FfmpegUrls = @(    # the same file in both places (gyan.dev's own GitHub copy is much faster)
+    'https://github.com/GyanD/codexffmpeg/releases/download/9.1/ffmpeg-9.1-essentials_build.zip',
+    'https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.1-essentials_build.zip'
 )
 $FfmpegSha = 'b9bbbb3acece000cbeec994f856649354e52c773807841e78908374b24d658fd'
 $VcRedistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
