@@ -1,8 +1,8 @@
 # Installs Kairokee from scratch on a clean Mac (Apple Silicon) and a clean Windows PC, the same way a
 # user does (double-click), then makes a test song and uses every main feature once (tools/smoke_test.py).
 #
-# Runs only when started by hand (Actions tab > "Install and test" > Run workflow) or when a version tag
-# (v2.1 ...) is pushed, because Mac minutes are expensive on private repos (they count 10x).
+# Runs only when started by hand (Actions tab > "Install and test" > Run workflow), because Mac minutes
+# are expensive on private repos (they count 10x). Run it before publishing a new release.
 # Note: GitHub's virtual Macs have no usable graphics chip, so this tests the processor (CPU) path.
 name: Install and test
 
@@ -13,8 +13,6 @@ on:
         description: "Also test the singer / ad-lib split (adds ~10 minutes per system)"
         type: boolean
         default: false
-  push:
-    tags: ["v*"]
 
 jobs:
   mac:
@@ -39,7 +37,7 @@ jobs:
       - name: Smoke test
         run: |
           "$KAIROKEE_HOME/venv/bin/python" tools/smoke_test.py --home "$KAIROKEE_HOME" \
-            --voice "$RUNNER_TEMP/voice.aiff" ${{ (github.event_name == 'push' || inputs.split) && '--split' || '' }}
+            --voice "$RUNNER_TEMP/voice.aiff" ${{ inputs.split && '--split' || '' }}
 
       - name: Keep the logs
         if: always()
@@ -83,7 +81,7 @@ jobs:
         run: |
           set VOICE=
           if exist "%RUNNER_TEMP%\voice.wav" set VOICE=--voice "%RUNNER_TEMP%\voice.wav"
-          "%KAIROKEE_HOME%\venv\Scripts\python.exe" tools\smoke_test.py --home "%KAIROKEE_HOME%" %VOICE% ${{ (github.event_name == 'push' || inputs.split) && '--split' || '' }}
+          "%KAIROKEE_HOME%\venv\Scripts\python.exe" tools\smoke_test.py --home "%KAIROKEE_HOME%" %VOICE% ${{ inputs.split && '--split' || '' }}
 
       - name: Keep the logs
         if: always()

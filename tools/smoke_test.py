@@ -75,7 +75,7 @@ def main():
     extra = [str(home / "ffmpeg"), str(home / "deno")]
     env["PATH"] = os.pathsep.join([p for p in extra if Path(p).exists()] + [env.get("PATH", "")])
     env.update(KAIROKEE_DATA=str(data), KAIROKEE_PORT=str(PORT), KAIROKEE_WHISPER_MODEL="small",
-               PYTHONUTF8="1", PYTORCH_ENABLE_MPS_FALLBACK="1")
+               PYTHONUTF8="1", PYTHONUNBUFFERED="1", PYTORCH_ENABLE_MPS_FALLBACK="1")
     # keep the downloaded AI models between runs of the same installation
     models = home / "data" / "models"
     models.mkdir(parents=True, exist_ok=True)
