@@ -146,7 +146,38 @@ def api_config():
         per[kind] = round(statistics.median(samples), 1) if samples else default
         measured[kind] = bool(samples)
     return {"device": info["device"], "gpu": info["gpu"], "fast": info["device"] != "cpu",
-            "perMinute": per, "measured": measured}
+            "perMinute": per, "measured": measured, "version": kk.APP_VERSION}
+
+
+# --------------------------------------------------------------------------- new version notice
+update_cache = {"at": 0.0, "info": None}
+
+
+def version_tuple(v):
+    try:
+        return tuple(int(x) for x in str(v).strip().lstrip("v").split("."))
+    except ValueError:
+        return (0,)
+
+
+@app.get("/api/update")
+def api_update():
+    """Is there a newer Kairokee? Checked at most every 6 hours; never an error (no internet = no notice)."""
+    if time.time() - update_cache["at"] > 6 * 3600:
+        update_cache["at"] = time.time()
+        try:
+            import urllib.request
+            req = urllib.request.Request(kk.UPDATE_URL, headers={"User-Agent": kk.USER_AGENT})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                update_cache["info"] = json.load(r)
+        except Exception:
+            update_cache["at"] = time.time() - 6 * 3600 + 600   # try again in 10 minutes
+    info = update_cache["info"] or {}
+    latest = str(info.get("version") or "")
+    newer = bool(latest) and version_tuple(latest) > version_tuple(kk.APP_VERSION)
+    return {"current": kk.APP_VERSION, "latest": latest or None, "newer": newer,
+            "notes": [str(n) for n in info.get("notes") or []][:12] if newer else [],
+            "howToGet": str(info.get("how_to_get") or "") if newer else ""}
 
 
 # --------------------------------------------------------------------------- helpers

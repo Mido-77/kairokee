@@ -43,7 +43,11 @@ OLD_KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
 WHISPER_MODEL = os.environ.get("KAIROKEE_WHISPER_MODEL", "medium")
 WHISPER_LANGS = {"ar", "en", "fr"}
 MATCH_THRESHOLD = 0.75   # how much of a result's song title must match our search to count as "the same song"
-USER_AGENT = "kairokee/0.2 (personal project)"
+APP_VERSION = "2.2"
+USER_AGENT = f"kairokee/{APP_VERSION} (personal project)"
+# A small file that says which Kairokee version is the newest (a secret GitHub gist). The app reads it
+# to tell people when a new version is out. Update it with:  python tools/publish_update.py
+UPDATE_URL = "https://gist.githubusercontent.com/Mido-77/9fe54f038a55b64085ce5946c4716416/raw/kairokee-latest.json"
 IS_MAC = sys.platform == "darwin"
 # what to open when the installed parts are broken (the message must name the right file on each system)
 REPAIR = "Kairokee-Repair.command" if IS_MAC else "Kairokee-Repair.bat"

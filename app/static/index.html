@@ -195,6 +195,13 @@
   select.btn { font: inherit; color: inherit; padding: .3rem .6rem; }
 
   /* add your own file */
+  /* new version notice and version number */
+  .update { margin: 0 0 1.25rem; background: var(--stage); border: 1px solid var(--amber); border-radius: 1rem; padding: .8rem 1rem; }
+  .update strong { color: var(--amber); }
+  .update ul { margin: .35rem 0; padding-inline-start: 1.2rem; font-size: .9rem; color: var(--dim); }
+  .update .how { font-size: .9rem; }
+  .update button { margin-top: .4rem; }
+  .version { margin-top: 2.5rem; font-size: .8rem; color: var(--faint); text-align: center; }
   .addfile { margin-top: .75rem; display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; font-size: .9rem; }
   .addfile label.btn { font-size: .9rem; padding: .35rem .9rem; }
   .field { width: 100%; background: var(--night); border: 1px solid var(--edge); border-radius: .6rem; padding: .5rem .7rem; }
@@ -226,6 +233,12 @@
   <h1 class="brand">kairokee</h1>
   <p class="tagline">Search a song. Get the instrumental and the lyrics, in sync.</p>
   <p id="deviceNote" class="muted" style="margin-top:-.5rem;font-size:.9rem" hidden></p>
+  <div id="updateBox" class="update" role="status" hidden>
+    <strong id="updateTitle"></strong>
+    <ul id="updateNotes"></ul>
+    <div id="updateHow" class="how"></div>
+    <button id="updateHide" class="btn nudge" type="button">Hide until the next version</button>
+  </div>
 
   <form id="searchForm" class="searchbar">
     <input id="q" type="search" placeholder="Song and artist" autocomplete="off" aria-label="Song and artist">
@@ -255,6 +268,7 @@
     <h2>Your songs</h2>
     <ul id="library" class="list"></ul>
   </section>
+  <p id="versionLine" class="version"></p>
 </main>
 
 <!-- ======================= PLAYER ======================= -->
@@ -536,6 +550,21 @@ api("/api/config").then((c) => {
   if (c.fast === undefined) c.fast = c.device !== "cpu";
   machine = c;
   showDeviceNote();
+  if (c.version) $("#versionLine").textContent = "Kairokee " + c.version;
+}).catch(() => {});
+
+/* ---------- a newer Kairokee is available ---------- */
+function lsGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* private mode */ } }
+api("/api/update").then((u) => {
+  if (!u.newer || lsGet("kairokee-hide-update") === u.latest) return;
+  $("#updateTitle").textContent = "Kairokee " + u.latest + " is available (you have " + u.current + ").";
+  const ul = $("#updateNotes");
+  ul.replaceChildren();
+  for (const n of u.notes) { const li = document.createElement("li"); li.textContent = n; ul.append(li); }
+  $("#updateHow").textContent = u.howToGet || "";
+  $("#updateBox").hidden = false;
+  $("#updateHide").onclick = () => { lsSet("kairokee-hide-update", u.latest); $("#updateBox").hidden = true; };
 }).catch(() => {});
 
 function showDeviceNote() {
