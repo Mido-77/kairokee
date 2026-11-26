@@ -28,7 +28,7 @@ TORCHAUDIO_VERSION=2.11.0
 TORCHVISION_VERSION=0.29.1
 MIN_MACOS=14                 # PyTorch 2.14 needs macOS 14 Sonoma or newer
 MIN_FREE_GB=12
-MIN_RAM_GB=8
+MIN_RAM_GB=6                 # same as Windows: below 8 GB it works, but slowly
 # Fixed versions with checksums: a broken or changed upstream release cannot break new installs.
 UV_URL="https://github.com/astral-sh/uv/releases/download/0.13.9/uv-aarch64-apple-darwin.tar.gz"
 UV_SHA="5aeca67f2283f75235de40d0bd9c0a5bbc5fce23b6d48b3bf9fa1b2db08382ca"
@@ -148,9 +148,9 @@ setup() {
     local ram_gb
     ram_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
     if [ "$ram_gb" -lt "$MIN_RAM_GB" ]; then
-        fail "This Mac has only $ram_gb GB of memory. Kairokee needs at least $MIN_RAM_GB GB."
+        fail "This Mac has only $ram_gb GB of memory. Kairokee needs at least $MIN_RAM_GB GB (8 GB or more is recommended)."
     fi
-    ok "$ram_gb GB of memory"
+    if [ "$ram_gb" -lt 8 ]; then note "Only $ram_gb GB of memory: it will work, but slowly."; else ok "$ram_gb GB of memory"; fi
 
     if ! curl -fsI --connect-timeout 15 https://pypi.org/simple/ >/dev/null; then
         fail "No internet connection. The first setup needs the internet (about 3 GB). Connect and open Kairokee again."

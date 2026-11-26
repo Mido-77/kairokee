@@ -13,7 +13,7 @@ WHICH MACS
  - A Mac with Apple Silicon: M1, M2, M3, M4 or newer
    (Apple menu > About This Mac shows "Chip: Apple M...").
  - macOS 14 Sonoma or newer.
- - At least 8 GB of memory and about 12 GB of free disk space.
+ - 8 GB of memory or more is recommended, and about 12 GB of free disk space.
 Macs with an Intel processor are not supported.
 
 
