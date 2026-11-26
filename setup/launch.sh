@@ -165,9 +165,10 @@ setup() {
         tar -xzf "$TOOLS_DIR/uv.tar.gz" -C "$TOOLS_DIR" || fail "Could not unpack the installer tool (uv)."
         rm -f "$TOOLS_DIR/uv.tar.gz"
         local found
-        found="$(find "$TOOLS_DIR" -type f -name uv -perm -u+x | head -n 1)"
+        found="$(find "$TOOLS_DIR" -type f -name uv | head -n 1)"
         [ -n "$found" ] && [ "$found" != "$UV" ] && cp "$found" "$UV"
-        [ -x "$UV" ] || fail "Could not set up the installer tool (uv)."
+        chmod +x "$UV" 2>/dev/null
+        [ -f "$UV" ] || fail "Could not set up the installer tool (uv)."
     fi
     ok "Ready"
 
