@@ -52,7 +52,9 @@ SPEED
  - PC without one (or with an old one): works, but each song takes several minutes,
    and splitting the ad-libs or writing lyrics can take much longer.
    Kairokee tells you which mode it is using when it starts.
- - AMD and Intel graphics are not used yet: those PCs use the processor (CPU).
+ - PC with AMD or Intel graphics (no NVIDIA card): the first setup measures whether the
+   graphics chip separates the voice faster than the processor, and uses it if so
+   (experimental). Splitting the ad-libs and writing lyrics still use the processor.
  - Windows on ARM (for example Snapdragon laptops) needs Windows 11. It runs in
    compatibility mode on the processor: it works, but slowly (not fully tested yet).
  - If you have an NVIDIA card but Kairokee uses the CPU, update the graphics
@@ -74,6 +76,7 @@ The normal Kairokee.bat can only be opened from this PC.
 IF SOMETHING GOES WRONG
 -----------------------
  - Open Kairokee-Repair.bat (keeps your songs and downloaded models).
+ - When a newer Kairokee is available, the home page says so and what changed.
  - If YouTube search or download stops working, just open Kairokee again.
    It updates the YouTube downloader (yt-dlp) automatically once a day.
  - A message about "Visual C++" means Windows needs a free Microsoft component.

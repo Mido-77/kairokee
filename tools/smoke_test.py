@@ -77,6 +77,19 @@ def main():
     env.update(KAIROKEE_DATA=str(data), KAIROKEE_PORT=str(PORT), KAIROKEE_WHISPER_MODEL="small",
                PYTHONUTF8="1", PYTHONUNBUFFERED="1", PYTORCH_ENABLE_MPS_FALLBACK="1")
     # keep the downloaded AI models between runs of the same installation
+    # use the mode the launcher chose (cuda / mps / dml / cpu), like the real app does
+    device = None
+    if (home / "state.json").exists():
+        try:
+            device = json.loads((home / "state.json").read_text(encoding="utf-8-sig")).get("Device")
+        except Exception:
+            pass
+    elif (home / "state.txt").exists():
+        for line in (home / "state.txt").read_text(encoding="utf-8").splitlines():
+            if line.startswith("Device="):
+                device = line.split("=", 1)[1].strip()
+    if device:
+        env["KAIROKEE_DEVICE"] = device
     models = home / "data" / "models"
     models.mkdir(parents=True, exist_ok=True)
     env["KAIROKEE_MODELS"] = str(models)

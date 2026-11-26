@@ -569,6 +569,12 @@ api("/api/update").then((u) => {
 
 function showDeviceNote() {
   const el = $("#deviceNote");
+  if (machine.device === "dml") {
+    el.hidden = false;
+    el.textContent = "Kairokee uses your AMD / Intel graphics to separate the voice (experimental). " +
+      "Splitting the ad-libs and writing lyrics use the processor, so they take longer.";
+    return;
+  }
   el.hidden = machine.fast;
   el.textContent = "Kairokee cannot use a fast graphics chip on this computer, so it uses the processor. " +
     "It works, but songs take longer. You will see the expected time before you start.";
@@ -599,7 +605,7 @@ function askMode(video, query) {
   $("#modeNameRow").hidden = !isFile;
   $("#modeName").value = isFile ? video.title : "";
   const fast = etaFor("fast", video.duration), split = etaFor("split", video.duration);
-  const slow = !machine.fast && split > 8 * 60;
+  const slow = split > 8 * 60;
   $("#modeWholeInfo").textContent = "One vocals track, ad-libs included. " +
     (slow ? "Recommended on this computer. " : "") + "Takes " + etaText(fast) + " on this computer.";
   $("#modeSplitInfo").textContent = "You can switch the ad-libs on or off on their own. Takes " +

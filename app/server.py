@@ -84,6 +84,7 @@ device_info = {}
 DEFAULT_PER_MINUTE = {
     "cuda": {"fast": 15, "split": 30, "transcribe": 20},
     "mps": {"fast": 25, "split": 90, "transcribe": 30},     # Apple Silicon: a first guess, replaced by real timings
+    "dml": {"fast": 35, "split": 440, "transcribe": 40},    # AMD / Intel graphics: only the voice separation is faster
     "cpu": {"fast": 70, "split": 440, "transcribe": 40},
 }
 

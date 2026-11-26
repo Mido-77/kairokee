@@ -89,10 +89,11 @@ def run_child(cmd, env=None):
 
 
 def compute_device():
-    """'cuda' (NVIDIA), 'mps' (Apple Silicon graphics) or 'cpu'. The launcher decides and tells us;
+    """'cuda' (NVIDIA), 'mps' (Apple Silicon graphics), 'dml' (AMD / Intel graphics on Windows, through
+    DirectML: used only to separate the voice from the music) or 'cpu'. The launcher decides and tells us;
     without the launcher (command line use) we ask PyTorch."""
     forced = os.environ.get("KAIROKEE_DEVICE")
-    if forced in ("cuda", "mps", "cpu"):
+    if forced in ("cuda", "mps", "dml", "cpu"):
         return forced
     try:
         import torch
@@ -316,7 +317,37 @@ def download_audio(video, folder):
 
 
 # --------------------------------------------------------------------------- 3. separate
-DEVICE_NAMES = {"cuda": "NVIDIA graphics card", "mps": "Apple graphics (Metal)", "cpu": "processor (CPU)"}
+DEVICE_NAMES = {"cuda": "NVIDIA graphics card", "mps": "Apple graphics (Metal)",
+                "dml": "AMD / Intel graphics (DirectML)", "cpu": "processor (CPU)"}
+# AMD / Intel graphics: a voice model in the ONNX format, which DirectML can run (Demucs cannot)
+MDX_MODEL = "UVR-MDX-NET-Voc_FT.onnx"
+
+
+def mdx_worker(args):
+    """Runs in its own process. Splits a song into vocals and everything else with an ONNX voice model,
+    on AMD / Intel graphics (DirectML) or the processor.  args: wav out_dir device"""
+    wav_path, out_dir, device = (args + ["", "", ""])[:3]
+    import logging
+
+    from audio_separator.separator import Separator
+
+    work = Path(out_dir) / "mdx"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    sep = Separator(output_dir=str(work), output_format="WAV", model_file_dir=str(MODEL_DIR), log_level=logging.WARNING)
+    if device == "dml":   # the strongest graphics chip in the computer
+        sep.onnx_execution_provider = [("DmlExecutionProvider", {"performance_preference": "high_performance"}),
+                                       "CPUExecutionProvider"]
+    else:
+        sep.onnx_execution_provider = ["CPUExecutionProvider"]
+    sep.load_model(model_filename=MDX_MODEL)
+    sep.separate(str(wav_path))
+    files = list(work.glob("*.wav"))
+    voc = next(f for f in files if "(vocals)" in f.name.lower())
+    ins = next(f for f in files if "(instrumental)" in f.name.lower())
+    voc.replace(Path(out_dir) / "vocals.wav")
+    ins.replace(Path(out_dir) / "no_vocals.wav")
+    shutil.rmtree(work, ignore_errors=True)
 CPU_FALLBACK_MSG = ("The graphics chip could not be used for this step, so it is using the processor. "
                     "This is slower. The app is working, it is not frozen.")
 
@@ -371,8 +402,11 @@ def separate_vocals(wav, folder, segment=None, say=lambda msg: None):
         if dev != device:
             print("[!] Separation on the graphics chip failed - trying again on the processor (slower).")
             say(CPU_FALLBACK_MSG)
-        cmd = [sys.executable, str(Path(__file__).resolve()), "--demucs-worker",
-               str(wav), str(work), dev, str(segment or "")]
+        if dev == "dml":
+            cmd = [sys.executable, str(Path(__file__).resolve()), "--mdx-worker", str(wav), str(work), dev]
+        else:
+            cmd = [sys.executable, str(Path(__file__).resolve()), "--demucs-worker",
+                   str(wav), str(work), dev, str(segment or "")]
         if run_child(cmd, child_env(dev)) == 0 and vocals.exists() and instrumental.exists():
             return vocals, instrumental
     die("Separation failed - read the error printed in the Kairokee window. If it says 'out of memory', "
@@ -808,6 +842,8 @@ def split_vocals(vocals_path, folder, say=lambda msg: None):
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     model = os.environ.get("KAIROKEE_KARAOKE_MODEL") or KARAOKE_MODEL
     device = compute_device()
+    if device == "dml":
+        device = "cpu"   # this model runs no faster on AMD / Intel graphics than on the processor (measured)
     files = []
     for dev in ([device, "cpu"] if device != "cpu" else ["cpu"]):
         if dev != device:
@@ -1000,7 +1036,7 @@ def run_pipeline(video, query, keep="both", keep_temp=False, segment=None,
 # --------------------------------------------------------------------------- command line
 def main():
     workers = {"--whisper-worker": whisper_worker, "--demucs-worker": demucs_worker,
-               "--split-worker": split_worker}
+               "--split-worker": split_worker, "--mdx-worker": mdx_worker}
     if len(sys.argv) > 1 and sys.argv[1] in workers:
         workers[sys.argv[1]](sys.argv[2:])
         return

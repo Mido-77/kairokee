@@ -84,6 +84,7 @@ The normal Kairokee.command can only be opened from this Mac.
 IF SOMETHING GOES WRONG
 -----------------------
  - Open Kairokee-Repair.command (keeps your songs and downloaded models).
+ - When a newer Kairokee is available, the home page says so and what changed.
  - If YouTube search or download stops working, just open Kairokee again.
    It updates the YouTube downloader (yt-dlp) automatically once a day.
  - If double-clicking does nothing or says "permission denied", open Terminal and type

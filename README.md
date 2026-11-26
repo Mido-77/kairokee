@@ -27,6 +27,14 @@ The ready-to-use zips are attached to the [latest release](../../releases/latest
 | `tools/build_release.py` | Builds both zips |
 | `tools/bench_split.py` | Speed/quality benchmark for the ad-lib splitter |
 
+## Making a new version
+
+1. Raise `APP_VERSION` in `app/kairokee.py`.
+2. Optional: run the automatic install test (Actions tab > "Install and test" > Run workflow).
+3. `python tools/build_release.py` and publish a GitHub release with the two zips.
+4. `python tools/publish_update.py "What changed" "..."` - everyone's Kairokee then shows a notice that a
+   new version is out (read from a secret gist; the notice says to ask Mido for the new zip).
+
 ## Building the zips
 
 ```

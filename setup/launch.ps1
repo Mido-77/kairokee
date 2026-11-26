@@ -26,6 +26,8 @@ $CudaBuilds = @{
 }
 $CpuIndex = 'https://download.pytorch.org/whl/cpu'
 $MinCompute = 5.0            # oldest card generation PyTorch still supports (Maxwell, GTX 900)
+# AMD / Intel graphics (no NVIDIA card): the voice separation can run on them through DirectML.
+$OrtDirectML = 'onnxruntime-directml==1.24.4'
 $BlackwellCompute = 10.0     # from here on (RTX 50) the cu130 build is needed
 $MinFreeGB = 12
 $MinRamGB = 6
@@ -141,6 +143,7 @@ function Get-GpuPlan {
         }
     }
     if (-not $smi) { $plan.Reason = 'No NVIDIA graphics card was found.'; return $plan }
+    if ($env:KAIROKEE_IGNORE_NVIDIA -eq '1') { $plan.Reason = 'NVIDIA card ignored (KAIROKEE_IGNORE_NVIDIA=1, for testing).'; return $plan }
 
     $hasCc = $true
     $r = Get-NativeOutput $smi @('--query-gpu=name,driver_version,memory.total,compute_cap', '--format=csv,noheader,nounits')
@@ -196,6 +199,56 @@ function Get-GpuPlan {
     }
     $plan.Device = 'cuda'
     return $plan
+}
+
+# ----------------------------------------------------------------------------- AMD / Intel graphics
+function Get-OtherGpu {
+    # The name of an AMD or Intel graphics chip (a dedicated one if there is one), or '' if there is none.
+    try {
+        $names = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | ForEach-Object { "$($_.Name)" } |
+            Where-Object { ($_ -match 'AMD|Radeon|Intel|Arc') -and ($_ -notmatch 'NVIDIA|Microsoft Basic|Remote|Virtual') })
+        if ($names.Count -eq 0) { return '' }
+        $best = $names | Where-Object { $_ -match 'Radeon RX|Radeon Pro|Arc' } | Select-Object -First 1
+        if ($best) { return $best }
+        return $names[0]
+    }
+    catch { return '' }
+}
+
+function Test-DirectML([string]$gpuName) {
+    # Installs the DirectML version of ONNX Runtime and measures whether separating the voice on the
+    # graphics chip is really faster than on the processor (integrated chips differ a lot).
+    # Returns $true to use the graphics chip. Never stops the setup.
+    Write-Info "Found $gpuName. Checking whether Kairokee can use it to separate the voice (about a minute)..."
+    try {
+        $r = Get-NativeOutput $Uv @('pip', 'uninstall', '--python', $VenvPy, 'onnxruntime')
+        Invoke-Native $Uv @('pip', 'install', '--python', $VenvPy, '--no-deps', $OrtDirectML) 'Installing DirectML support' 3
+        $env:KAIROKEE_DATA = $DataDir
+        New-Item -ItemType Directory -Force (Join-Path $DataDir 'models') | Out-Null
+        $old = $env:PATH
+        if (Test-Path $FfmpegDir) { $env:PATH = "$FfmpegDir;$env:PATH" }
+        $r = Get-NativeOutput $VenvPy @((Join-Path $SetupDir 'dml_bench.py'))
+        $env:PATH = $old
+        foreach ($line in $r.Out) {
+            if ($line.StartsWith('KAIROKEE_DMLBENCH ')) {
+                $b = $line.Substring(18) | ConvertFrom-Json
+                if ($b.error) { Write-Note "The graphics chip could not be used ($($b.error)). Kairokee uses the processor."; return $false }
+                if ($b.use) { Write-Ok "$gpuName separates the voice in $($b.dml_s) s, the processor in $($b.cpu_s) s -> using the graphics chip (experimental)"; return $true }
+                Write-Note "$gpuName is not faster than the processor here ($($b.dml_s) s against $($b.cpu_s) s). Kairokee uses the processor."
+                return $false
+            }
+        }
+        Write-Note 'The graphics check printed nothing useful. Kairokee uses the processor.'
+    }
+    catch {
+        Write-Note "The graphics check did not work ($($_.Exception.Message)). Kairokee uses the processor."
+        # make sure a working ONNX Runtime is there again
+        $show = Get-NativeOutput $Uv @('pip', 'show', '--python', $VenvPy, 'onnxruntime-directml')
+        if ($show.Code -ne 0) {
+            $null = Get-NativeOutput $Uv @('pip', 'install', '--python', $VenvPy, 'onnxruntime', '-c', (Join-Path $SetupDir 'constraints.txt'))
+        }
+    }
+    return $false
 }
 
 # ----------------------------------------------------------------------------- setup (first run)
@@ -357,6 +410,12 @@ function Invoke-Setup {
     }
     Write-Ok "PyTorch $($test.torch), mode: $($device.ToUpper())"
 
+    $gpuName = $gpu.Name
+    if (($device -eq 'cpu') -and (-not $IsArm)) {
+        $other = Get-OtherGpu
+        if ($other -and (Test-DirectML $other)) { $device = 'dml'; $gpuName = $other }
+    }
+
     $vram = 0
     if ($device -eq 'cuda') { $vram = $gpu.VramMB }
     $seg = 0
@@ -364,7 +423,8 @@ function Invoke-Setup {
     Save-State ([pscustomobject]@{
             SetupVersion = $SetupVersion
             Device = $device
-            GpuName = $gpu.Name
+            GpuName = $gpuName
+            DmlChecked = $true
             VramMB = $vram
             Whisper = (Get-Whisper $device $vram)
             Segment = $seg
@@ -494,7 +554,9 @@ function Start-Kairokee($state) {
     if (Test-Path $DenoDir) { $env:PATH = "$DenoDir;$env:PATH" }
     $env:DENO_NO_UPDATE_CHECK = '1'
 
-    if ($state.Device -eq 'cuda') { $modeText = "fast GPU mode ($($state.GpuName))" } else { $modeText = 'CPU mode (slower: a song can take many minutes)' }
+    if ($state.Device -eq 'cuda') { $modeText = "fast GPU mode ($($state.GpuName))" }
+    elseif ($state.Device -eq 'dml') { $modeText = "graphics mode: $($state.GpuName) separates the voice (experimental); the rest uses the processor" }
+    else { $modeText = 'CPU mode (slower: a song can take many minutes)' }
     Write-Host ''
     Write-Host '  Kairokee' -ForegroundColor Cyan
     Write-Host "  Mode: $modeText"
@@ -578,6 +640,13 @@ try {
     }
     else {
         $state = Update-YtDlp $state
+        # installed before AMD / Intel graphics support existed: check the graphics chip once
+        if (($state.Device -eq 'cpu') -and (-not $state.DmlChecked) -and (-not $IsArm)) {
+            $other = Get-OtherGpu
+            if ($other -and (Test-DirectML $other)) { $state.Device = 'dml'; $state.GpuName = $other }
+            $state | Add-Member -NotePropertyName DmlChecked -NotePropertyValue $true -Force
+            Save-State $state
+        }
     }
     Confirm-YouTubeHelpers
     Set-Shortcut $false

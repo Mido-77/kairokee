@@ -34,6 +34,7 @@ WINDOWS = SHARED + [
     "Kairokee-Phone.bat",
     "Kairokee-Repair.bat",
     "setup/launch.ps1",
+    "setup/dml_bench.py",
 ]
 MAC = SHARED + [
     ("README-Mac.txt", "README.txt"),
