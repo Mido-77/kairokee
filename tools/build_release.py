@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT.parent   # the zips go next to the source folder, not inside it
 
 SHARED = [
+    "README.md",                    # the full guide (both systems); README.txt is the short one
     "app/kairokee.py",
     "app/server.py",
     "app/static/index.html",
@@ -80,5 +81,5 @@ def build(name, files, crlf_for):
 
 if __name__ == "__main__":
     print("Building:")
-    build("Kairokee-Windows.zip", WINDOWS, crlf_for=(".bat", ".ps1", ".txt"))
+    build("Kairokee-Windows.zip", WINDOWS, crlf_for=(".bat", ".ps1", ".txt", ".md"))
     build("Kairokee-Mac.zip", MAC, crlf_for=())
