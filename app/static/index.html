@@ -199,13 +199,8 @@
   .addfile label.btn { font-size: .9rem; padding: .35rem .9rem; }
   .field { width: 100%; background: var(--night); border: 1px solid var(--edge); border-radius: .6rem; padding: .5rem .7rem; }
 
-  /* key, speed, recording, delete */
+  /* key, speed, delete */
   .keyval { min-width: 2.6rem; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
-  .rec-on { background: #c0392b !important; border-color: #c0392b !important; color: #fff !important; }
-  .reclist { list-style: none; padding: 0; margin: .4rem 0 0; }
-  .reclist li { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding: .35rem 0; border-top: 1px solid var(--edge); font-size: .85rem; }
-  .reclist audio { height: 2rem; flex: 1; min-width: 12rem; }
-  .reclist a { color: var(--amber); }
   .danger-btn { color: var(--danger); }
   .section-gap { margin-top: 1.1rem; padding-top: .8rem; border-top: 1px solid var(--edge); }
 
@@ -366,15 +361,6 @@
     </div>
     <div class="muted" style="font-size:.8rem;margin-top:.4rem">
       Lyrics appearing too early? Move the timing up (+). Too late? Move it down (-).
-    </div>
-
-    <div class="section-gap">
-      <div class="mix" style="flex-wrap:wrap">
-        <label>Record yourself</label>
-        <button id="recBtn" class="btn" type="button">Record my singing</button>
-        <span id="recMsg" class="muted" style="font-size:.85rem;flex-basis:100%">Records your voice with the music, from where the song is now. Use headphones for the best sound.</span>
-      </div>
-      <ul id="recList" class="reclist"></ul>
     </div>
 
     <div class="section-gap">
@@ -821,9 +807,6 @@ async function openSong(slug) {
     catch (_) { song.key = 0; }
   }
   showKey();
-  renderRecordings();
-  $("#recMsg").textContent = REC_HINT;
-  $("#recMsg").className = "muted";
   setupAudio();
   $("#splitRow").hidden = !(data.hasVocals && !data.hasLead);
   $("#noVocals").hidden = data.hasVocals;
@@ -898,7 +881,6 @@ function setupAudio() {
 }
 
 function teardown() {
-  if (rec) stopRecording();
   cancelAnimationFrame(raf);
   for (const x of stems) { x.el.pause(); x.el.removeAttribute("src"); x.el.load(); }
   stems = [];
@@ -1435,110 +1417,6 @@ $("#stagePlay").addEventListener("click", togglePlay);
 document.addEventListener("fullscreenchange", () => {
   if (!document.fullscreenElement && document.body.classList.contains("stage")) toggleStage(false);
 });
-
-/* ---------- record yourself singing ---------- */
-const REC_HINT = "Records your voice with the music, from where the song is now. Use headphones for the best sound.";
-let rec = null;   // {mr, stream, chunks, start, latency, slug, key, music}
-function recSupported() {
-  return !!(window.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-}
-async function startRecording() {
-  const msg = $("#recMsg");
-  if (!recSupported()) {
-    msg.className = "error";
-    msg.textContent = "Recording only works in a browser on the computer that runs Kairokee " +
-      "(browsers allow the microphone only on secure pages, and the phone address is not one).";
-    return;
-  }
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true } });
-  } catch (err) {
-    msg.className = "error";
-    msg.textContent = "The microphone could not be used: " + err.message + ". Allow the microphone for this page and try again.";
-    return;
-  }
-  const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
-  const mr = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
-  const track = stream.getAudioTracks()[0];
-  const inLat = (track.getSettings && track.getSettings().latency) || 0.02;
-  const outLat = ctx ? (ctx.outputLatency || ctx.baseLatency || 0.04) : 0.04;
-  rec = { mr, stream, chunks: [], start: 0, latency: inLat + outLat, slug: song.slug, key: song.key || 0, music: mix.music / 100 };
-  mr.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
-  const m = master();
-  if (m && m.paused) await togglePlay();
-  mr.onstart = () => { if (rec) rec.start = master() ? master().currentTime : 0; };
-  mr.start(1000);
-  $("#recBtn").textContent = "Stop recording";
-  $("#recBtn").classList.add("rec-on");
-  msg.className = "muted";
-  msg.textContent = "Recording... sing along! Press Stop recording when you are done.";
-}
-function stopRecording() {
-  const r = rec;
-  rec = null;
-  $("#recBtn").textContent = "Record my singing";
-  $("#recBtn").classList.remove("rec-on");
-  if (!r) return;
-  r.mr.onstop = async () => {
-    r.stream.getTracks().forEach((t) => t.stop());
-    const type = r.mr.mimeType || "audio/webm";
-    const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
-    const blob = new Blob(r.chunks, { type });
-    const msg = $("#recMsg");
-    if (blob.size < 2000) { msg.textContent = "The recording was too short."; return; }
-    msg.className = "muted";
-    msg.textContent = "Saving your recording...";
-    try {
-      const q = "?start=" + r.start.toFixed(3) + "&latency=" + r.latency.toFixed(3) +
-                "&music=" + r.music.toFixed(2) + "&key=" + r.key + "&ext=" + ext;
-      await sendFile("/api/song/" + enc(r.slug) + "/recording" + q, blob, () => {});
-      if (song && song.slug === r.slug) {
-        const data = await api("/api/song/" + enc(r.slug));
-        song.recordings = data.recordings;
-        renderRecordings();
-        msg.textContent = "Saved. Your recordings are listed below.";
-      }
-    } catch (err) { msg.className = "error"; msg.textContent = err.message; }
-  };
-  try { r.mr.stop(); } catch (_) {}
-  const m = master();
-  if (m && !m.paused) stems.forEach((x) => x.el.pause());
-  syncPlayButton();
-}
-$("#recBtn").addEventListener("click", () => (rec ? stopRecording() : startRecording()));
-function renderRecordings() {
-  const ul = $("#recList");
-  ul.replaceChildren();
-  for (const r of (song && song.recordings) || []) {
-    const li = document.createElement("li");
-    const url = "/files/" + enc(song.slug) + "/recordings/" + enc(r.name);
-    const name = document.createElement("span");
-    name.textContent = r.name.replace(/\.mp3$/, "");
-    const audio = document.createElement("audio");
-    audio.controls = true;
-    audio.preload = "none";
-    audio.src = url;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = song.title + " - " + r.name;
-    a.textContent = "Download";
-    const del = document.createElement("button");
-    del.className = "btn nudge danger-btn";
-    del.type = "button";
-    del.textContent = "Delete";
-    del.addEventListener("click", async () => {
-      if (!confirm("Delete this recording? This cannot be undone.")) return;
-      try {
-        await api("/api/song/" + enc(song.slug) + "/recordings/" + enc(r.name), { method: "DELETE" });
-        song.recordings = song.recordings.filter((x) => x.name !== r.name);
-        renderRecordings();
-      } catch (err) { alert(err.message); }
-    });
-    li.append(name, audio, a, del);
-    ul.append(li);
-  }
-}
 
 /* ---------- start ---------- */
 loadLibrary().then(() => {

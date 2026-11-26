@@ -33,9 +33,6 @@ WHAT YOU CAN DO WITH A SONG
  - Speed: slower or faster for practice, without changing the key.
  - Full screen: big lyrics for a TV or a party (press F, or Esc to leave).
    Dots count down before the singing starts again.
- - Record my singing: records your voice with the music and saves it as an mp3 you can
-   download. Use headphones. It works in a browser on the computer that runs Kairokee
-   (not from a phone: browsers only allow the microphone on secure pages).
  - Use a song file from this device: make karaoke from your own audio or video file
    instead of YouTube (on the home page, under the search box).
  - Delete this song: you can press Undo right away, and deleted songs are kept for

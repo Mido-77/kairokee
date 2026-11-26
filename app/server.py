@@ -347,7 +347,6 @@ def api_song(slug: str):
         "source": meta.get("lyrics_source"),
         "duration": meta.get("video_duration"),
         "key": int(meta.get("key") or 0),
-        "recordings": list_recordings(folder),
     }
 
 
@@ -427,52 +426,6 @@ def api_key(slug: str, body: KeyBody):
     meta["key"] = n
     write_meta(folder, meta)
     return {"ok": True, "key": n, "path": "" if n == 0 else f"key/{n:+d}/"}
-
-
-# --------------------------------------------------------------------------- recordings
-def list_recordings(folder):
-    rec = folder / "recordings"
-    if not rec.exists():
-        return []
-    files = sorted(rec.glob("*.mp3"), key=lambda f: f.stat().st_mtime, reverse=True)
-    return [{"name": f.name, "size": f.stat().st_size} for f in files]
-
-
-@app.put("/api/song/{slug}/recording")
-async def api_recording(request: Request, slug: str, start: float = 0.0, latency: float = 0.0,
-                        music: float = 1.0, key: int = 0, ext: str = "webm"):
-    """Receive your singing (recorded in the browser) and save it mixed with the music as an mp3."""
-    folder = song_folder(slug)
-    rec = folder / "recordings"
-    rec.mkdir(exist_ok=True)
-    ext = ext if ext.isalnum() and len(ext) <= 5 else "webm"
-    raw = rec / f"voice-{uuid.uuid4().hex[:8]}.{ext}"
-    with open(raw, "wb") as f:
-        async for chunk in request.stream():
-            f.write(chunk)
-    out = rec / time.strftime("Recording %Y-%m-%d %H-%M-%S.mp3")
-    try:
-        await asyncio_to_thread(kk.mix_recording, folder, raw, start, latency, music, key, out)
-    except kk.KairokeeError as e:
-        raise HTTPException(500, str(e))
-    finally:
-        raw.unlink(missing_ok=True)
-    return {"ok": True, "name": out.name}
-
-
-async def asyncio_to_thread(fn, *args):
-    import asyncio
-    return await asyncio.to_thread(fn, *args)
-
-
-@app.delete("/api/song/{slug}/recordings/{name}")
-def api_recording_delete(slug: str, name: str):
-    folder = song_folder(slug)
-    f = (folder / "recordings" / name).resolve()
-    if f.parent != (folder / "recordings").resolve() or not f.exists():
-        raise HTTPException(404, "Recording not found")
-    f.unlink()
-    return {"ok": True}
 
 
 class Settings(BaseModel):

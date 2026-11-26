@@ -382,7 +382,7 @@ def to_mp3(src, dst):
     )
 
 
-# --------------------------------------------------------------------------- key change and recordings
+# --------------------------------------------------------------------------- key change
 STEM_FILES = ("instrumental.mp3", "vocals.mp3", "lead.mp3", "backing.mp3")
 _filters = {}
 
@@ -446,23 +446,6 @@ def render_key(folder, semitones):
     if not all(results):
         die("Could not change the key of this song (ffmpeg failed - see the Kairokee window).")
     return dest
-
-
-def mix_recording(folder, voice_file, start, latency, music_volume, semitones, out_file):
-    """Your singing + the music, from the moment you pressed Record, as one mp3.
-    start: song position (s) when recording began. latency: how much later the voice arrived (s)."""
-    music = key_folder(folder, semitones) / "instrumental.mp3" if semitones else folder / "instrumental.mp3"
-    if not music.exists():
-        music = folder / "instrumental.mp3"
-    vol = max(0.0, min(1.5, music_volume))
-    # the voice is moved earlier by the delay of speakers + microphone, then both are mixed
-    voice_chain = f"[1:a]atrim=start={max(0.0, latency):.3f},asetpts=PTS-STARTPTS,aresample=44100,volume=1.6[v]"
-    music_chain = f"[0:a]atrim=start={max(0.0, start):.3f},asetpts=PTS-STARTPTS,aresample=44100,volume={vol:.2f}[m]"
-    graph = f"{voice_chain};{music_chain};[m][v]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.95[out]"
-    r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(music), "-i", str(voice_file),
-                        "-filter_complex", graph, "-map", "[out]", "-b:a", "256k", str(out_file)])
-    if r.returncode != 0 or not Path(out_file).exists():
-        die("Could not save the recording (ffmpeg failed - see the Kairokee window).")
 
 
 # --------------------------------------------------------------------------- 4. lyrics

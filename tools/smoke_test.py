@@ -142,13 +142,7 @@ def main():
         with urllib.request.urlopen(url, timeout=60) as resp:
             check(resp.status == 200 and len(resp.read()) > 10000, "music in the new key can be played")
 
-        print("\n4. Save a recording", flush=True)
-        voice = Path(args.voice) if args.voice else song
-        status, r = call("PUT", f"/api/song/{urllib.parse.quote(slug)}/recording?start=1&latency=0.05&music=0.8&key=-2"
-                                f"&ext={voice.suffix.lstrip('.') or 'wav'}", raw=voice.read_bytes())
-        check(status == 200, f"recording saved ({r})")
-
-        print("\n5. Delete and undo", flush=True)
+        print("\n4. Delete and undo", flush=True)
         status, r = call("DELETE", "/api/song/" + urllib.parse.quote(slug))
         check(status == 200, "song deleted")
         _, lib = call("GET", "/api/library")
